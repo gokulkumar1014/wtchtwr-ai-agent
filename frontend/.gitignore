@@ -1,0 +1,14 @@
+# Local env
+.env
+.env.local
+
+# Node modules
+node_modules/
+
+# Vite build output
+dist/
+.vite/
+
+# Editor junk
+.DS_Store
+.vscode/

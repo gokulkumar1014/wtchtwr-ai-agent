@@ -1,0 +1,39 @@
+# Core
+python-dotenv>=1.0.0
+pydantic>=2.7
+pydantic-settings>=2.0
+
+# Backend
+fastapi>=0.110.0
+uvicorn>=0.30.0
+orjson>=3.9.0
+
+# Agent Orchestration
+langgraph>=0.4.0
+langchain>=0.3.0
+langchain-core>=0.3.0
+langchain-openai>=0.3.0
+langgraph-prebuilt>=0.5.0
+
+# Data / SQL
+duckdb>=1.0.0
+pandas>=2.1.0
+numpy>=1.26.0
+pyarrow>=15.0.0
+fastparquet>=2024.1.0
+
+# Embeddings + ML
+sentence-transformers>=2.5.0
+scikit-learn>=1.4.0
+
+# Vector DB (Qdrant)
+qdrant-client>=1.7.0
+
+# Utils
+requests>=2.31.0
+tqdm>=4.66.0
+rich>=13.0.0
+
+# Slack integration
+slack-bolt>=1.18.0
+slack-sdk>=3.20.0

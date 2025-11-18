@@ -1,0 +1,103 @@
+###############################################################################
+# 🌐 PROJECT-WIDE IGNORE — SAFE FOR ALL TEAM MEMBERS
+###############################################################################
+
+# ------------------------------
+# 🚫 Python cache / virtual envs
+# ------------------------------
+__pycache__/
+.venv/
+.env
+.env.*
+pytest_policy.log
+
+# ------------------------------
+# 🚫 Jupyter notebooks (large outputs)
+# ------------------------------
+notebooks/*
+!notebooks/README.md
+
+# ------------------------------
+# 🚫 Node / Frontend
+# ------------------------------
+node_modules/
+.vscode/
+
+###############################################################################
+# 📁 DATA DIRECTORIES
+###############################################################################
+
+# ------------------------------
+# 🚫 Ignore ALL heavy data by default
+# ------------------------------
+data/*
+!data/README.md       # Only track documentation
+!data/samples/        # Small demo files allowed
+!data/samples/*       
+!data/cache/          # Small parquet caches allowed
+!data/cache/*         
+
+# Explicitly ignore Raw + Clean datasets (LARGE)
+data/Raw/
+data/clean/
+
+# Allow only cached/demo parquet assets inside data
+!data/cache/*.parquet
+!data/samples/*.csv
+
+###############################################################################
+# 🦆 DUCKDB
+###############################################################################
+
+# Ignore DuckDB folder
+db/*
+!db/README.md
+
+# Allow team to track database if needed (small enough)
+!db/airbnb.duckdb
+
+###############################################################################
+# 🧠 VECTORS / EMBEDDINGS
+###############################################################################
+
+# Ignore entire vec folder by default
+vec/*
+!vec/README.md
+
+# Allow ONLY these required vector assets:
+!vec/airbnb_reviews/
+!vec/airbnb_reviews/*.npy
+!vec/airbnb_reviews/*.parquet
+
+###############################################################################
+# 🧱 QDRANT STORAGE (NEVER COMMIT)
+###############################################################################
+
+qdrant_storage/*
+!qdrant_storage/README.md
+!qdrant_storage/.gitkeep
+
+# Extra accidental storage dirs
+storage/
+
+###############################################################################
+# 📦 Binary / Heavy file patterns
+###############################################################################
+
+*.db
+*.sqlite3
+*.bin
+*.pickle
+*.pkl
+*.npy
+*.csv
+*.parquet
+*.pt
+*.ckpt
+
+# Re-allow tracked assets already whitelisted
+!data/cache/*.parquet
+!data/samples/*.csv
+!vec/airbnb_reviews/*.npy
+!vec/airbnb_reviews/*.parquet
+config/gdrive_service_account.json
