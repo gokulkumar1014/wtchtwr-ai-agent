@@ -149,7 +149,7 @@ http://localhost:6333/dashboard
 
 ## 6️⃣ Reindex Reviews (Only first time)
 ```
-python scripts/reindex_qdrant_reviews.py
+python scripts/rebuild_review_vectors.py --reuse-artifacts
 ```
 
 ## 7️⃣ Start Backend
