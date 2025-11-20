@@ -141,6 +141,7 @@ class Config:
     streaming_enabled: bool
     use_metadata_filters: bool
     openai_model: str
+    openai_fallback_model: str
     openai_api_key: Optional[str]
     top_k_default: int
     similarity_min: float
@@ -225,7 +226,10 @@ def load_config(refresh: bool = False) -> Config:
         if not path_var.is_absolute():
             path_var = project_root / path_var
 
-    openai_model = os.getenv("HOPE_AGENT_OPENAI_MODEL", "gpt-4o-mini")
+    primary_model_default = "gpt-5.1"
+    fallback_model_default = "gpt-4o"
+    openai_model = os.getenv("HOPE_AGENT_OPENAI_MODEL", primary_model_default).strip()
+    openai_fallback_model = os.getenv("HOPE_AGENT_OPENAI_FALLBACK_MODEL", fallback_model_default).strip()
     openai_api_key = os.getenv("OPENAI_API_KEY")
 
     streaming_enabled = os.getenv("HOPE_AGENT_STREAMING_ENABLED", "true").strip().lower() in {"true", "1", "yes"}
@@ -267,6 +271,7 @@ def load_config(refresh: bool = False) -> Config:
         streaming_enabled=streaming_enabled,
         use_metadata_filters=use_metadata_filters,
         openai_model=openai_model,
+        openai_fallback_model=openai_fallback_model,
         openai_api_key=openai_api_key,
         top_k_default=top_k_default,
         similarity_min=similarity_min,
@@ -299,3 +304,4 @@ __all__ = [
     "get_month_abbrev",
     "normalize_filters",
 ]
+
