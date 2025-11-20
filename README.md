@@ -112,8 +112,8 @@ docker run hello-world
 
 ## 2️⃣ Clone the Repository
 ```
-git clone https://github.com/gokulkumar1014/wtchtwr-AI-Powered-Property-Performance-and-Market-Insights-Agent.git wtchtwr-agent
-cd wtchtwr-agent
+git clone https://github.com/gokulkumar1014/wtchtwr-ai-agent.git
+cd wtchtwr-ai-agent
 ```
 
 ## 3️⃣ Create Virtual Environment
@@ -149,7 +149,7 @@ http://localhost:6333/dashboard
 
 ## 6️⃣ Reindex Reviews (Only first time)
 ```
-python scripts/reindex_qdrant_reviews.py
+python scripts/rebuild_review_vectors.py --reuse-artifacts
 ```
 
 ## 7️⃣ Start Backend
