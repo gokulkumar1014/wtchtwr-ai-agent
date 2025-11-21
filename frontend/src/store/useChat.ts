@@ -37,6 +37,14 @@ export interface AssistantPayload {
   pipeline?: string;
   policy?: string;
   telemetry?: Record<string, unknown>;
+  intent?: string;
+  expansion_report?: string;
+  expansion_sources?: Array<{
+    url?: string;
+    title?: string;
+    text?: string;
+    score?: number | string;
+  }>;
   sentiment_analytics?: {
     positive: number;
     neutral: number;

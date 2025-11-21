@@ -100,6 +100,13 @@ interface SnippetMeta {
   is_highbury?: string;
 }
 
+interface ExpansionSource {
+  url?: string;
+  title?: string;
+  text?: string;
+  score?: number | string;
+}
+
 const formatCellValue = (value: unknown): string => {
   if (value === null || value === undefined) return "";
   if (typeof value === "string") return value;
@@ -333,6 +340,17 @@ export const MessageBubble: React.FC<MessageProps> = ({
       : undefined;
   const sqlText = rawSqlText || fallbackSqlFromTable;
   const hasSqlQuery = Boolean(sqlText);
+  const expansionSources: ExpansionSource[] =
+    !isUser && Array.isArray(message.payload?.expansion_sources)
+      ? (message.payload?.expansion_sources as ExpansionSource[])
+      : [];
+  const expansionIntent =
+    !isUser &&
+    ((typeof message.payload?.intent === "string" &&
+      message.payload.intent.toUpperCase() === "EXPANSION_SCOUT") ||
+      (typeof message.payload?.policy === "string" &&
+        message.payload.policy.toUpperCase() === "EXPANSION_SCOUT") ||
+      message.payload?.response_type === "expansion");
 
   let displayContent = "";
   let usedMarkdownAsText = false;
@@ -392,6 +410,48 @@ export const MessageBubble: React.FC<MessageProps> = ({
               {markdownTable}
             </ReactMarkdown>
           </div>
+        )}
+
+        {!isUser && expansionIntent && expansionSources.length > 0 && (
+          <details className="mt-4 expansion-sources group">
+            <summary className="flex flex-wrap items-center justify-between gap-3 cursor-pointer text-sm font-semibold text-primary-600 transition group-open:text-primary-700">
+              <span className="flex items-center gap-1">
+                <span className="text-2xl leading-none transition-transform group-open:rotate-90">▸</span>
+                Web Sources Used
+              </span>
+            </summary>
+            <div className="mt-3 space-y-2">
+              {expansionSources.map((src, idx) => (
+                <div
+                  key={`expansion-source-${idx}-${src.url || src.title || "source"}`}
+                  className="relative overflow-hidden rounded-3xl border border-slate-200/70 bg-gradient-to-br from-white via-amber-50/70 to-orange-50/60 p-5 shadow-[0_12px_25px_rgba(15,23,42,0.08)]"
+                >
+                  <div className="absolute inset-y-4 left-4 w-px bg-gradient-to-b from-amber-200 via-amber-300 to-transparent" aria-hidden="true" />
+                  <div className="pl-4 sm:pl-6 space-y-2">
+                    <div className="text-sm font-semibold text-slate-800">
+                      {src.title || src.url || `Source ${idx + 1}`}
+                    </div>
+                    {src.url && (
+                      <a
+                        href={src.url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-xs text-primary-600 hover:text-primary-700 break-words"
+                      >
+                        {src.url}
+                      </a>
+                    )}
+                    {src.text && (
+                      <p className="text-xs text-slate-600 leading-relaxed">
+                        {src.text.slice(0, 320)}
+                        {src.text.length > 320 ? "..." : ""}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </details>
         )}
 
         {!isUser && hasSqlQuery && (

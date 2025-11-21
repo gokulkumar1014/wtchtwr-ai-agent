@@ -201,6 +201,18 @@ _HYBRID_INTENT_HINTS = {
     "influence of", "associated with", "reviews reflect",
 }
 
+_EXPANSION_KEYWORDS = (
+    "expand",
+    "new market",
+    "new neighborhood",
+    "where should we go next",
+    "where should highbury expand",
+    "best neighborhood to invest",
+    "what area is growing",
+    "future neighborhods",
+    "future neighborhoods",
+)
+
 _COMPARISON_KEYWORD_TOKENS = {kw for kw in _COMPARISON_KEYWORDS if " " not in kw}
 _COMPARISON_KEYWORD_PHRASES = {kw for kw in _COMPARISON_KEYWORDS if " " in kw}
 
@@ -429,6 +441,14 @@ def _detect_intent_refined(text: str | None) -> str:
     return _detect_intent(text)
 
 
+def _is_expansion_query(text: str) -> bool:
+    """Return True when the query is asking about expansion / new markets."""
+    if not text:
+        return False
+    normalized = text.lower()
+    return any(keyword in normalized for keyword in _EXPANSION_KEYWORDS)
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -460,6 +480,11 @@ def classify_intent(state: State) -> State:
     contains_highbury = "highbury" in normalized
     contains_market = "market" in normalized
     contains_our = bool(_OUR_PATTERN.search(raw_query))
+
+    if _is_expansion_query(normalized):
+        state.update({"scope": "Highbury", "intent": "EXPANSION_SCOUT", "filters": filters})
+        _LOGGER.info("[INTENT] EXPANSION_SCOUT detected for query=%r", raw_query)
+        return state
 
     compare_scope = (
         contains_highbury

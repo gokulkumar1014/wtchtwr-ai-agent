@@ -177,6 +177,19 @@ def plan_steps(state: State) -> State:
         telemetry.update({"policy": "CONVERSATION", "mode": "chat"})
         return state
 
+    if intent == "EXPANSION_SCOUT":
+        plan = {
+            "mode": "expansion_scout",
+            "policy": "EXPANSION_SCOUT",
+            "sql_table": None,
+            "top_k": cfg.top_k_default,
+            "use_sentiment": False,
+        }
+        state.update({"plan": plan, "policy": "EXPANSION_SCOUT"})
+        telemetry = state.setdefault("telemetry", {})
+        telemetry.update({"policy": "EXPANSION_SCOUT", "mode": "expansion_scout"})
+        return state
+
     user_filters = (state.get("_input", {}) or {}).get("user_filters", {}) or {}
 
     force_rag = _bool_or_none(user_filters.get("reviews")) is True
@@ -341,6 +354,8 @@ def choose_path(state: State | object) -> str:
         return mode
 
     intent = str(_state_value(state, "intent", "") or "").upper()
+    if intent == "EXPANSION_SCOUT":
+        return "expansion_scout"
     if intent in {"REVIEWS_RAG", "SENTIMENT_REVIEWS"}:
         return "rag"
     if intent in {"HYBRID", "FACT_SQL_RAG"}:

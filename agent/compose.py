@@ -71,6 +71,67 @@ BEHAVIOR:
 - For SQL-only answers, explain the meaning of the numbers briefly.
 - For RAG-only answers, tie reviews to data themes where possible (“Guests mentioning price often stayed in…”)
 - Maintain structure (headers, bullets, markdown tables) but weave narrative flow.
+
+### EXPANSION SCOUT — SYSTEM PROMPT
+You are wtchtwr — a strategic real-estate expansion analyst for NYC short-term rental operators.
+
+Your job: produce a concise, structured EXPANSION SCOUT REPORT for Highbury.
+
+HIGHBURY PAIN POINTS (ALWAYS USE)
+- 37 of 38 listings concentrated in Manhattan → extreme exposure risk.
+- Needs outer-borough diversification (Queens / Brooklyn first).
+- Core guest segments: business travelers, couples, longer-stay tourists.
+- Must avoid over-regulated / high-scrutiny STR zones.
+- Looking for neighborhoods with rising tourism, strong infrastructure, stable regulation.
+
+BEHAVIOR
+- NEVER recommend Manhattan.
+- Prioritize Queens + Brooklyn unless signals strongly contradict.
+- Synthesize ONLY from the signals provided (tourism, development, infrastructure, regulation).
+- Use simple operator language: “why it fits”, “what risk remains”.
+- No long essays; use structured bullets.
+- Do not hallucinate policies — reflect only what signals suggest.
+
+OUTPUT FORMAT:
+
+# 1. **OVERALL SUMMARY**
+- 3–4 sentences
+- Name the top 2–3 neighborhoods.
+- Tie directly to Highbury’s diversification need.
+
+# 2. **RANKED NEIGHBORHOOD RECOMMENDATION**
+For each neighborhood (max 4):
+- **Neighborhood Name**
+- **Why it fits Highbury** (tourism + infrastructure + development + regulation)
+- **Confidence Score (0–100) with a reason**
+- **Risk Notes**
+
+# 3. **EXTERNAL SIGNAL BREAKDOWN** 
+- Table
+| Neighborhood | Signal Type | Evidence Summary | Fit for Highbury | 
+- Signal Types: Use pharses like tourism momentum, development pipeline, infrastructure mobility, regulation environment based on data given. 
+- list the neighborhood only once and add multiple signal types if needed
+
+# 4. **RECOMMENDED PROPERTY TYPE**
+- 1–2 sentences
+- Tie to Highbury’s winning segments: business stays, couples, mid-stay demand.
+
+# 5. **RISKS & CONSTRAINTS**
+- use bullets
+- Include: regulatory volatility, competition, infrastructure timeline, demand uncertainty.
+
+# 6. **FINAL OPERATOR TAKEAWAY**
+- 3–4 sentences
+A crisp recommendation summarizing:
+- where to expand
+- why
+- what inventory mix
+- what timin
+
+TONE
+- Strategic, confident, portfolio-operator voice.
+- Manhattan is NOT considered as highbury is already over exposed there(unless explicitly asked).
+- Clarity > verbosity.
 """
 
 TRIAGE_STYLE_INSTRUCTION = r"""
@@ -423,7 +484,7 @@ def render_result_markdown(
             snippet = snip.get("snippet") or snip.get("text") or snip.get("comments") or ""
             listing_id = snip.get("listing_id", "?")
             comment_id = snip.get("comment_id", "?")
-            lines.append(f"- ({borough} | {month} {year}) L{listing_id}/C{comment_id}: {_truncate(snippet)}")
+            lines.append(f"- [{borough} | {month} {year}]  #{listing_id} · #{comment_id}: {_truncate(snippet)}")
         parts.append("\n".join(lines))
 
     return "\n\n".join(parts) if parts else "_No structured results provided._"
@@ -663,6 +724,22 @@ def _build_sentiment_summary_block(
 
     return "\n\n".join(sections)
 
+
+def _render_expansion_sources(expansion_sources: List[Dict[str, Any]]) -> str:
+    """Render web source list as a collapsible block."""
+    if not expansion_sources:
+        return ""
+    lines = [
+        "<details>",
+        "<summary>Web Sources Used</summary>",
+        "",
+    ]
+    for source in expansion_sources:
+        url = source.get("url") or source.get("title") or "Source"
+        lines.append(f"- {url}")
+    lines.append("</details>")
+    return "\n".join(lines)
+
 # ---------------------------------------------------------------------
 # COMPOSER INPUT BUILDER
 # ---------------------------------------------------------------------
@@ -678,6 +755,8 @@ def build_composer_input(
     applied_filters: Dict[str, Any],
     intent: Optional[str] = None,
     portfolio_triage: Optional[Dict[str, Any]] = None,
+    expansion_report: Optional[str] = None,
+    expansion_sources: Optional[List[Dict[str, Any]]] = None,
 ) -> List[Dict[str, str]]:
     """Build OpenAI-compatible message list including context blocks."""
     msgs: List[Dict[str, str]] = [
@@ -699,6 +778,7 @@ def build_composer_input(
     action_backlog = (portfolio_triage or {}).get("action_backlog") or []
     has_sql_rows = bool(rows)
     has_rag_snippets = bool(rag_snippets)
+    expansion_block = _render_expansion_sources(expansion_sources or [])
 
     ctx_lines = [
         "[CONTEXT]",
@@ -718,6 +798,12 @@ def build_composer_input(
         ctx_lines.append("<RAW_JSON_DO_NOT_STRIP>")
         ctx_lines.append(json.dumps(action_backlog, indent=2))
         ctx_lines.append("</RAW_JSON_DO_NOT_STRIP>")
+    if expansion_report:
+        ctx_lines.append("expansion report:\n" + expansion_report)
+    if expansion_block:
+        ctx_lines.append("web sources used:\n" + expansion_block)
+    if filters_text == "none":
+        ctx_lines.append("applied_filters: none")
 
     ctx_lines.append(f"has_sql_rows={str(has_sql_rows).lower()}")
     ctx_lines.append(f"has_rag_snippets={str(has_rag_snippets).lower()}")
@@ -1108,6 +1194,16 @@ def fallback_text(bundle: Dict[str, Any]) -> str:
     if filters_text and filters_text != "none":
         lines.append(f"Filters: {filters_text}")
 
+    expansion_report = bundle.get("expansion_report")
+    expansion_sources = bundle.get("expansion_sources") or []
+    if expansion_report:
+        lines.append(expansion_report.strip())
+        sources_block = _render_expansion_sources(expansion_sources)
+        if sources_block:
+            lines.append("")
+            lines.append(sources_block)
+        return "\n\n".join(lines)
+
     rows = bundle.get("rows", [])
     rag_snippets = bundle.get("rag_snippets", [])
     if rows:
@@ -1141,6 +1237,7 @@ __all__ = [
     "fallback_text",
     "format_filters",
     "_build_sentiment_summary_block",
+    "_render_expansion_sources",
 ]
 
 # [LEAK_DETECTOR]: Added logging to monitor SQL text leakage.

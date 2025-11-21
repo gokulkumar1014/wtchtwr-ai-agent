@@ -247,4 +247,14 @@ def egress(state: State | str) -> Dict[str, Any]:
     return response
 
 
-__all__ = ["ingress", "guardrails", "egress"]
+def fallback_expansion_text() -> str:
+    """Deterministic guidance when external expansion signals are unavailable."""
+    return (
+        "Could not retrieve external signals. Here are 3 operator heuristics for evaluating new markets:\n"
+        "- Prioritize neighborhoods with visible infrastructure commitments (transit, mixed-use projects).\n"
+        "- Look for steady tourism pull: hotel pipeline compression, rising boutique inventory, and walkability to anchors.\n"
+        "- Favor regulation-stable zones with consistent short-term rental precedents and clear permitting rules."
+    )
+
+
+__all__ = ["ingress", "guardrails", "egress", "fallback_expansion_text"]

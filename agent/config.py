@@ -10,7 +10,11 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Any
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv
+except Exception:  # pragma: no cover - optional dependency
+    def load_dotenv(*args: Any, **kwargs: Any) -> None:
+        return None
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -157,6 +161,8 @@ class Config:
     chat_max_turns: int = 6
     stream_composer: bool = True
     chroma_collection: str = "airbnb_reviews_all"
+    tavily_api_key: Optional[str] = None
+    tavily_max_results: int = 3
 
     @property
     def duckdb_path_str(self) -> str:
@@ -231,6 +237,8 @@ def load_config(refresh: bool = False) -> Config:
     openai_model = os.getenv("HOPE_AGENT_OPENAI_MODEL", primary_model_default).strip()
     openai_fallback_model = os.getenv("HOPE_AGENT_OPENAI_FALLBACK_MODEL", fallback_model_default).strip()
     openai_api_key = os.getenv("OPENAI_API_KEY")
+    tavily_api_key = os.getenv("TAVILY_API_KEY")
+    tavily_max_results = int(os.getenv("TAVILY_MAX_RESULTS", "3"))
 
     streaming_enabled = os.getenv("HOPE_AGENT_STREAMING_ENABLED", "true").strip().lower() in {"true", "1", "yes"}
     use_metadata_filters = os.getenv("HOPE_AGENT_USE_METADATA_FILTERS", "true").strip().lower() in {"true", "1", "yes"}
@@ -287,6 +295,8 @@ def load_config(refresh: bool = False) -> Config:
         chat_max_turns=chat_max_turns,
         stream_composer=stream_composer,
         chroma_collection=chroma_collection,
+        tavily_api_key=tavily_api_key,
+        tavily_max_results=tavily_max_results,
     )
 
     _LOGGER.debug(
@@ -304,4 +314,3 @@ __all__ = [
     "get_month_abbrev",
     "normalize_filters",
 ]
-

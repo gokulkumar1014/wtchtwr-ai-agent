@@ -46,6 +46,7 @@ from .compose import (
     critic_guard,
     fallback_text,
     _build_sentiment_summary_block,
+    _render_expansion_sources,
 )
 from .config import load_config
 from .guards import egress as _legacy_egress
@@ -56,6 +57,7 @@ from .nl2sql_llm import plan_to_sql_llm
 from .policy import plan_steps as _legacy_plan_steps
 from .policy import resolve_entities as _legacy_resolve_entities
 from .policy import choose_path
+from .expansion_scout import exec_expansion_scout
 from .portfolio_triage import run_portfolio_triage
 from .types import GraphState, State, add_thinking_step, graph_to_state, state_to_graph
 from .utils.cleaners import normalize_rag_text
@@ -441,6 +443,12 @@ def _compose_legacy(legacy_state: State) -> State:
     aggregates = bundle.get("aggregates", {})
     policy = bundle.get("policy", legacy_state.get("telemetry", {}).get("policy", ""))
     filters = bundle.get("filters", {})
+    expansion_report = legacy_state.get("expansion_report") or bundle.get("expansion_report")
+    expansion_sources = legacy_state.get("expansion_sources") or bundle.get("expansion_sources") or []
+    if expansion_report:
+        bundle.setdefault("expansion_report", expansion_report)
+    if expansion_sources:
+        bundle.setdefault("expansion_sources", expansion_sources)
 
     input_meta = legacy_state.get("_input", {}) or {}
     stream_handler = input_meta.get("stream_handler")
@@ -471,6 +479,8 @@ def _compose_legacy(legacy_state: State) -> State:
                     filters,
                     legacy_state.get("intent"),
                     portfolio_triage=triage_context,
+                    expansion_report=expansion_report,
+                    expansion_sources=expansion_sources,
                 )
                 answer_text, usage = compose_answer(
                     messages, cfg.openai_model, stream_handler=stream_handler
@@ -500,6 +510,11 @@ def _compose_legacy(legacy_state: State) -> State:
                 answer_text = f"{answer_text.rstrip()}\n\n{sentiment_block}"
             else:
                 answer_text = sentiment_block
+
+        if expansion_sources:
+            sources_block = _render_expansion_sources(expansion_sources)
+            if sources_block and "Web Sources Used" not in (answer_text or ""):
+                answer_text = f"{answer_text.rstrip()}\n\n{sources_block}".strip()
 
         if isinstance(answer_text, str) and re.search(r"(?i)\bselect\b", answer_text):
             _LOGGER.warning(
@@ -615,6 +630,13 @@ def _exec_rag_node(state: GraphState) -> GraphState:
         "summary": next_state.rag.get("summary"),
         "hits": rag_hits[:5],
     }
+    return _merge_states(state, next_state)
+
+
+def _expansion_scout_node(state: GraphState) -> GraphState:
+    legacy_state = graph_to_state(state)
+    updated = exec_expansion_scout(legacy_state)
+    next_state = state_to_graph(updated)
     return _merge_states(state, next_state)
 
 
@@ -973,6 +995,11 @@ def _guardrail_route(state: GraphState) -> str:
     return "blocked" if state.guardrail_blocked else "continue"
 
 
+def _intent_route(state: GraphState) -> str:
+    intent = str(state.intent or "").upper()
+    return "expansion" if intent == "EXPANSION_SCOUT" else "continue"
+
+
 # ---------------------------------------------------------------------------
 # Result containers
 # ---------------------------------------------------------------------------
@@ -1046,6 +1073,7 @@ def build_graph() -> StateGraph:
     builder.add_node("ingress", _ingress_node)
     builder.add_node("guardrails", _guardrails_node)
     builder.add_node("classify_intent", _classify_intent_node)
+    builder.add_node("expansion_scout", _expansion_scout_node)
     builder.add_node("resolve_entities", _resolve_entities_node)
     builder.add_node("plan_steps", _plan_steps_node)
     builder.add_node("plan_to_sql", _plan_to_sql_node)
@@ -1061,19 +1089,25 @@ def build_graph() -> StateGraph:
         "continue": "classify_intent",
         "blocked": "egress",
     })
-    builder.add_edge("classify_intent", "resolve_entities")
+    builder.add_conditional_edges("classify_intent", _intent_route, {
+        "expansion": "expansion_scout",
+        "__default__": "resolve_entities",
+        "continue": "resolve_entities",
+    })
     builder.add_edge("resolve_entities", "plan_steps")
     builder.add_conditional_edges("plan_steps", choose_path, {
         "nl2sql": "plan_to_sql",
         "rag": "exec_rag",
         "hybrid": "hybrid_fusion",
         "portfolio_triage": "portfolio_triage",
+        "expansion_scout": "expansion_scout",
         "__default__": "plan_to_sql",
     })
     builder.add_edge("plan_to_sql", "compose")
     builder.add_edge("exec_rag", "compose")
     builder.add_edge("hybrid_fusion", "compose")
     builder.add_edge("portfolio_triage", "compose")
+    builder.add_edge("expansion_scout", "compose")
     builder.add_edge("compose", "egress")
     builder.add_edge("egress", END)
 

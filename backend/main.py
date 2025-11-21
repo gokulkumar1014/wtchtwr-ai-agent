@@ -775,6 +775,18 @@ def build_assistant_payload(result: Dict[str, Any], question: str) -> Dict[str, 
     telemetry = result.get("telemetry") or {}
     state_snapshot = result.get("state_snapshot") or {}
     extras = state_snapshot.get("extras") if isinstance(state_snapshot.get("extras"), dict) else {}
+    intent = str(state_snapshot.get("intent") or result.get("intent") or "").upper()
+    expansion_report = (
+        bundle.get("expansion_report")
+        or result.get("expansion_report")
+        or extras.get("expansion_report")
+    )
+    expansion_sources = (
+        bundle.get("expansion_sources")
+        or result.get("expansion_sources")
+        or extras.get("expansion_sources")
+        or []
+    )
     state_sql = state_snapshot.get("sql") or {}
     sql_text = (
         result.get("sql_text")
@@ -888,6 +900,8 @@ def build_assistant_payload(result: Dict[str, Any], question: str) -> Dict[str, 
 
     if sql_text and rag_snippets:
         response_type = "hybrid"
+    elif intent == "EXPANSION_SCOUT" or expansion_report:
+        response_type = "expansion"
     elif sql_text:
         response_type = "sql"
     elif rag_snippets:
@@ -909,6 +923,12 @@ def build_assistant_payload(result: Dict[str, Any], question: str) -> Dict[str, 
         "policy": bundle.get("policy") or telemetry.get("policy"),
         "markdown_table": markdown_table,
     }
+    if intent:
+        payload["intent"] = intent
+    if expansion_report:
+        payload["expansion_report"] = expansion_report
+    if expansion_sources:
+        payload["expansion_sources"] = expansion_sources
     sentiment_summary = _summarize_sentiment(rag_snippets)
     if sentiment_summary:
         payload["sentiment_analytics"] = sentiment_summary
@@ -1133,6 +1153,27 @@ async def run_query(req: QueryRequest):
         except Exception:
             pass
         safe_response = safe_json(normalise_payload(result))
+        try:
+            state_snapshot = result.get("state_snapshot") or result.get("state") or {}
+            intent = str(state_snapshot.get("intent") or result.get("intent") or "").upper()
+            if intent == "EXPANSION_SCOUT" and isinstance(safe_response, dict):
+                bundle = result.get("result_bundle") or {}
+                report = (
+                    state_snapshot.get("expansion_report")
+                    or bundle.get("expansion_report")
+                    or result.get("expansion_report")
+                    or safe_response.get("answer_text")
+                )
+                sources = (
+                    state_snapshot.get("expansion_sources")
+                    or bundle.get("expansion_sources")
+                    or result.get("expansion_sources")
+                    or []
+                )
+                safe_response.setdefault("expansion_report", report)
+                safe_response.setdefault("expansion_sources", sources)
+        except Exception:
+            logger.warning("[run_query] Unable to inject expansion payload", exc_info=True)
         try:
             logger.debug('[run_query] Final payload keys: %s', list(safe_response.keys()))
         except Exception:
