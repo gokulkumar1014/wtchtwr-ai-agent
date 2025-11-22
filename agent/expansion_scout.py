@@ -5,10 +5,21 @@ import logging
 import os
 import re
 import time
+from io import BytesIO
 from typing import Any, Dict, List, Optional
 
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+try:
+    import trafilatura  # type: ignore
+except Exception:  # pragma: no cover - optional dependency
+    trafilatura = None  # type: ignore
+
+try:
+    import PyPDF2  # type: ignore
+except Exception:  # pragma: no cover - optional dependency
+    PyPDF2 = None  # type: ignore
 
 try:
     from langchain_community.document_loaders import WebBaseLoader
@@ -36,6 +47,10 @@ DEFAULT_EXPANSION_TEMPLATES: Dict[str, str] = {
 
 _KEYPOINT_TERMS = ("increase", "development", "rezoning", "project", "growth", "expansion", "pipeline")
 _MAX_ARTICLE_CHARS = 12000  # ~3000 tokens
+_MIN_ARTICLE_CHARS = 500  # Minimum usable content
+_REQUEST_TIMEOUT = 8  # seconds for HTTP fetches
+_SLOW_DOMAINS_SKIP = {"www.mckinsey.com"}
+_MIN_SOURCES_TARGET = 8
 
 
 def tavily_search(query: str, max_results: int = 5) -> List[Dict[str, Any]]:
@@ -69,22 +84,60 @@ def tavily_search(query: str, max_results: int = 5) -> List[Dict[str, Any]]:
 
 
 def load_article(url: str) -> str:
-    """Fetch and clean article text, truncated to ~3000 tokens."""
+    """Fetch and clean article text, truncated, with PDF and trafilatura support."""
     if not url:
         return ""
+    try:
+        domain = re.sub(r"^https?://", "", url).split("/")[0].lower()
+        if domain in _SLOW_DOMAINS_SKIP:
+            _LOGGER.info("[EXPANSION] Skipping slow domain %s", domain)
+            return ""
+    except Exception:
+        pass
+
+    def _truncate_and_clean(raw: str) -> str:
+        cleaned = re.sub(r"\s+", " ", raw or "").strip()
+        return cleaned[:_MAX_ARTICLE_CHARS]
+
+    # PDF handling
+    if url.lower().endswith(".pdf") and PyPDF2 is not None:
+        try:
+            resp = requests.get(url, timeout=_REQUEST_TIMEOUT)
+            resp.raise_for_status()
+            reader = PyPDF2.PdfReader(BytesIO(resp.content))
+            pages = [page.extract_text() or "" for page in reader.pages]
+            text = _truncate_and_clean(" ".join(pages))
+            _LOGGER.info("[EXPANSION] Loaded PDF %s chars=%d", url, len(text))
+            return text
+        except Exception as exc:  # pragma: no cover - PDF failures
+            _LOGGER.warning("[EXPANSION] PDF load failed for %s: %s", url, exc)
+
+    # HTML with trafilatura first
+    if trafilatura is not None:
+        try:
+            downloaded = trafilatura.fetch_url(url)
+            if downloaded:
+                extracted = trafilatura.extract(downloaded) or ""
+                text = _truncate_and_clean(extracted)
+                _LOGGER.info("[EXPANSION] Loaded article %s chars=%d via trafilatura", url, len(text))
+                return text
+        except Exception as exc:  # pragma: no cover - trafilatura failures
+            _LOGGER.warning("[EXPANSION] Trafilatura load failed for %s: %s", url, exc)
+
+    # Fallback to LangChain loader
     if WebBaseLoader is None:
         _LOGGER.warning("[EXPANSION] WebBaseLoader unavailable; skipping article fetch.")
         return ""
     try:
         docs = WebBaseLoader(url).load()
     except Exception as exc:  # pragma: no cover - network/loader failures
-        _LOGGER.warning("[EXPANSION] Failed to load article %s: %s", url, exc)
+        _LOGGER.warning("[EXPANSION] Failed to load article %s via WebBaseLoader: %s", url, exc)
         return ""
 
     text_parts = [getattr(doc, "page_content", "") or "" for doc in docs]
-    text = " ".join(text_parts)
-    text = re.sub(r"\s+", " ", text).strip()
-    return text[:_MAX_ARTICLE_CHARS]
+    text = _truncate_and_clean(" ".join(text_parts))
+    _LOGGER.info("[EXPANSION] Loaded article %s chars=%d via WebBaseLoader", url, len(text))
+    return text
 
 
 def generate_dynamic_queries(user_question: str) -> Dict[str, str]:
@@ -233,20 +286,20 @@ def synthesize_expansion_report(normalized_signals: Dict[str, Any], highbury_con
         "- Core segments: business travelers, couples, longer-stay tourists.",
         "- Wants neighbourhoods with rising tourism + strong development + stable regulation.",
         "",
-    "WEB SIGNALS (raw summaries):",
-    "",
-    "TOURISM SIGNALS:",
-    tourism_block or "- none",
-    "",
+        "WEB SIGNALS (raw summaries):",
+        "",
+        "TOURISM SIGNALS:",
+        tourism_block or "- none",
+        "",
     "INFRASTRUCTURE SIGNALS:",
     infra_block or "- none",
     "",
-    "DEVELOPMENT SIGNALS:",
-    development_block or "- none",
-    "",
-    "REGULATION SIGNALS:",
-    regulation_block or "- none",
-    "",
+        "DEVELOPMENT SIGNALS:",
+        development_block or "- none",
+        "",
+        "REGULATION SIGNALS:",
+        regulation_block or "- none",
+        "",
         "STRUCTURE YOUR OUTPUT EXACTLY AS FOLLOWS:",
         "",
         "# 1. Summary Recommendation",
@@ -259,6 +312,7 @@ def synthesize_expansion_report(normalized_signals: Dict[str, Any], highbury_con
         "",
         "Do NOT recommend Manhattan.",
         "Keep it concise and operator-ready.",
+        "You MUST explicitly reference extracted key_points from each signal; if no key_points exist for a signal, skip it rather than inventing details.",
     ]
     prompt = "\n".join(context_lines)
 
@@ -299,13 +353,13 @@ def exec_expansion_scout(state: State) -> State:
     cfg = load_config()
     raw_sources: List[Dict[str, Any]] = []
     max_results = min(getattr(cfg, "tavily_max_results", 3) or 3, 3)
-    per_category_cap = 2
-    global_cap = 10
+    per_category_cap = 3
+    global_cap = 12
     user_question = state.get("query") or ""
     queries_map = generate_dynamic_queries(user_question)
 
     try:
-        with ThreadPoolExecutor(max_workers=5) as executor:
+        with ThreadPoolExecutor(max_workers=4) as executor:
             future_to_meta = {}
             for category, query in queries_map.items():
                 future = executor.submit(tavily_search, query, max_results)
@@ -330,7 +384,7 @@ def exec_expansion_scout(state: State) -> State:
                     search_results.append((meta["category"], hit))
 
         # Fetch article content (can be parallelized; keep small pool)
-        with ThreadPoolExecutor(max_workers=5) as executor:
+        with ThreadPoolExecutor(max_workers=4) as executor:
             article_futures = {}
             for category, hit in search_results:
                 url = hit.get("url")
@@ -343,6 +397,11 @@ def exec_expansion_scout(state: State) -> State:
                     text = future.result()
                 except Exception as load_exc:  # pragma: no cover - loader failures
                     _LOGGER.debug("[EXPANSION] Article load failed for %s: %s", hit.get("url"), load_exc)
+                if len(text or "") < _MIN_ARTICLE_CHARS:
+                    _LOGGER.info(
+                        "[EXPANSION] Skipping source (too short) %s chars=%d", hit.get("url"), len(text or "")
+                    )
+                    continue
                 raw_sources.append(
                     {
                         "category": signal_category,
@@ -354,6 +413,61 @@ def exec_expansion_scout(state: State) -> State:
                 )
     except Exception as exc:  # pragma: no cover - defensive catch
         _LOGGER.warning("[EXPANSION] Tavily pipeline failed: %s", exc)
+
+    # Fallback pass if we didn't reach the minimum target
+    if len(raw_sources) < _MIN_SOURCES_TARGET:
+        try:
+            fallback_queries = DEFAULT_EXPANSION_TEMPLATES
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                future_to_meta = {}
+                for category, query in fallback_queries.items():
+                    future = executor.submit(tavily_search, query, max_results)
+                    future_to_meta[future] = {"category": _map_category(category), "query": query}
+
+                search_results: List[tuple[str, Dict[str, Any]]] = []
+                category_counts: Dict[str, int] = {}
+                for future in as_completed(future_to_meta):
+                    meta = future_to_meta[future]
+                    try:
+                        hits = future.result()
+                    except Exception as search_exc:
+                        _LOGGER.warning("[EXPANSION] Fallback Tavily search failed for %s: %s", meta["query"], search_exc)
+                        continue
+                    for hit in hits:
+                        if len(raw_sources) + len(search_results) >= global_cap:
+                            break
+                        count = category_counts.get(meta["category"], 0)
+                        if count >= per_category_cap:
+                            continue
+                        category_counts[meta["category"]] = count + 1
+                        search_results.append((meta["category"], hit))
+
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                article_futures = {}
+                for category, hit in search_results:
+                    url = hit.get("url")
+                    article_futures[executor.submit(load_article, url)] = (category, hit)
+                for future in as_completed(article_futures):
+                    category, hit = article_futures[future]
+                    signal_category = _map_category(category)
+                    text = ""
+                    try:
+                        text = future.result()
+                    except Exception as load_exc:
+                        _LOGGER.debug("[EXPANSION] Fallback article load failed for %s: %s", hit.get("url"), load_exc)
+                    if len(text or "") < _MIN_ARTICLE_CHARS:
+                        continue
+                    raw_sources.append(
+                        {
+                            "category": signal_category,
+                            "url": hit.get("url"),
+                            "title": hit.get("title"),
+                            "score": hit.get("score"),
+                            "text": text,
+                        }
+                    )
+        except Exception as exc:
+            _LOGGER.warning("[EXPANSION] Fallback fetch failed: %s", exc)
 
     normalized = normalize_external_signals(raw_sources)
     highbury_context = {

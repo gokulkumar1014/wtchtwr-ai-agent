@@ -344,6 +344,7 @@ export const MessageBubble: React.FC<MessageProps> = ({
     !isUser && Array.isArray(message.payload?.expansion_sources)
       ? (message.payload?.expansion_sources as ExpansionSource[])
       : [];
+  const expansionCount = expansionSources.length;
   const expansionIntent =
     !isUser &&
     ((typeof message.payload?.intent === "string" &&
@@ -351,20 +352,21 @@ export const MessageBubble: React.FC<MessageProps> = ({
       (typeof message.payload?.policy === "string" &&
         message.payload.policy.toUpperCase() === "EXPANSION_SCOUT") ||
       message.payload?.response_type === "expansion");
+  const isLoadingPlaceholder = !isUser && message.payload?.response_type === "loading";
 
   let displayContent = "";
   let usedMarkdownAsText = false;
   if (isUser) {
     displayContent = message.content ?? message.nl_summary ?? "";
   } else {
-    displayContent = resolveAssistantText(message);
+    displayContent = isLoadingPlaceholder ? "" : resolveAssistantText(message);
     if (!displayContent && markdownTable) {
       displayContent = markdownTable;
       usedMarkdownAsText = true;
     }
   }
 
-  if (!displayContent && !isUser) {
+  if (!displayContent && !isUser && !isLoadingPlaceholder) {
     displayContent = "No insight available from the model. Please rephrase your question or try again.";
   }
 
@@ -392,6 +394,19 @@ export const MessageBubble: React.FC<MessageProps> = ({
           )}
         </div>
 
+          {isLoadingPlaceholder && (
+            <div className="mt-2">
+              <div className="inline-flex items-center gap-3 rounded-2xl border border-slate-200 bg-white/80 px-3 py-2 shadow-sm">
+                <span className="text-sm text-slate-600 font-semibold">Thinking longer for a sharper answer</span>
+                <span className="loading-dots flex items-center gap-1">
+                  <span className="dot" />
+                  <span className="dot" />
+                  <span className="dot" />
+                </span>
+            </div>
+          </div>
+        )}
+
         {shouldRenderContent && (
           <div className={`mt-3 ${isUser ? "text-white/95" : "text-slate-700"}`}>
             <ReactMarkdown
@@ -417,16 +432,16 @@ export const MessageBubble: React.FC<MessageProps> = ({
             <summary className="flex flex-wrap items-center justify-between gap-3 cursor-pointer text-sm font-semibold text-primary-600 transition group-open:text-primary-700">
               <span className="flex items-center gap-1">
                 <span className="text-2xl leading-none transition-transform group-open:rotate-90">▸</span>
-                Web Sources Used
+                Web Sources Used{expansionCount ? ` (${expansionCount})` : ""}
               </span>
             </summary>
             <div className="mt-3 space-y-2">
               {expansionSources.map((src, idx) => (
                 <div
                   key={`expansion-source-${idx}-${src.url || src.title || "source"}`}
-                  className="relative overflow-hidden rounded-3xl border border-slate-200/70 bg-gradient-to-br from-white via-amber-50/70 to-orange-50/60 p-5 shadow-[0_12px_25px_rgba(15,23,42,0.08)]"
+                  className="relative overflow-hidden rounded-3xl border border-slate-200/70 bg-gradient-to-br from-white via-sky-50/80 to-sky-100/70 p-5 shadow-[0_12px_25px_rgba(15,23,42,0.08)]"
                 >
-                  <div className="absolute inset-y-4 left-4 w-px bg-gradient-to-b from-amber-200 via-amber-300 to-transparent" aria-hidden="true" />
+                  <div className="absolute inset-y-4 left-4 w-px bg-gradient-to-b from-primary-200 via-primary-300 to-transparent" aria-hidden="true" />
                   <div className="pl-4 sm:pl-6 space-y-2">
                     <div className="text-sm font-semibold text-slate-800">
                       {src.title || src.url || `Source ${idx + 1}`}

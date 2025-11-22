@@ -413,7 +413,7 @@ export const ChatPage: React.FC = () => {
           {
             id: optimisticAssistantId,
             role: "assistant",
-            nl_summary: "Fetching result…",
+            nl_summary: "Thinking longer for a sharper answer…",
             payload: { tables: [], response_type: "loading", summary: "" },
             timestamp: now,
           },
