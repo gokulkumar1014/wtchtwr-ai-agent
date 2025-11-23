@@ -394,15 +394,15 @@ export const MessageBubble: React.FC<MessageProps> = ({
           )}
         </div>
 
-          {isLoadingPlaceholder && (
-            <div className="mt-2">
-              <div className="inline-flex items-center gap-3 rounded-2xl border border-slate-200 bg-white/80 px-3 py-2 shadow-sm">
-                <span className="text-sm text-slate-600 font-semibold">Thinking longer for a sharper answer</span>
-                <span className="loading-dots flex items-center gap-1">
-                  <span className="dot" />
-                  <span className="dot" />
-                  <span className="dot" />
-                </span>
+        {isLoadingPlaceholder && (
+          <div className="mt-2">
+            <div className="flex items-center gap-2 text-sm text-slate-500 font-semibold">
+              <span>Thinking longer for a better answer</span>
+              <span className="loading-dots flex items-center gap-1">
+                <span className="dot" />
+                <span className="dot" />
+                <span className="dot" />
+              </span>
             </div>
           </div>
         )}

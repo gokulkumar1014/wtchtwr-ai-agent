@@ -163,6 +163,8 @@ export const ChatPage: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [highlightedId, setHighlightedId] = useState<string | undefined>();
+  const [autoScroll, setAutoScroll] = useState(true);
+  const lastMessageCountRef = useRef(0);
 
   const [summaryData, setSummaryData] = useState<ConversationSummaryPayload | null>(null);
   const [summaryView, setSummaryView] = useState<"concise" | "detailed">("concise");
@@ -280,6 +282,20 @@ export const ChatPage: React.FC = () => {
     syncConversation(localConversation);
   };
 
+  const handleScroll = (event: React.UIEvent<HTMLDivElement>) => {
+    const el = event.currentTarget;
+    const totalScrollable = el.scrollHeight - el.clientHeight;
+    // If content doesn't overflow, always allow auto-scroll
+    if (totalScrollable <= 4) {
+      if (!autoScroll) setAutoScroll(true);
+      return;
+    }
+    const distanceFromBottom = totalScrollable - el.scrollTop;
+    const isAtBottom = distanceFromBottom <= 4;
+    // Any meaningful scroll away from the bottom disables auto-scroll
+    setAutoScroll(isAtBottom);
+  };
+
   const settlePendingAsError = (question: string, detail: string): boolean => {
     const pending = pendingMessageRef.current;
     if (!currentConversation || !pending || currentConversation.id !== pending.conversationId) {
@@ -347,11 +363,22 @@ export const ChatPage: React.FC = () => {
   );
 
   useEffect(() => {
+    if (!currentConversation) return;
     if (focusMessageId) return;
-    const container = messagesContainerRef.current;
-    if (!container) return;
-    container.scrollTo({ top: container.scrollHeight, behavior: "smooth" });
-  }, [currentConversation?.messages, focusMessageId]);
+    if (!autoScroll) return;
+
+    const messageCount = currentConversation.messages.length;
+    const previousCount = lastMessageCountRef.current;
+
+    // Only auto-scroll when a new message is appended (not when streaming updates a message)
+    if (messageCount > previousCount) {
+      const container = messagesContainerRef.current;
+      if (container) {
+        container.scrollTo({ top: container.scrollHeight, behavior: "smooth" });
+      }
+    }
+    lastMessageCountRef.current = messageCount;
+  }, [currentConversation, focusMessageId, autoScroll]);
 
   const syncConversation = (conversation: Conversation) => {
     const sanitized = prepareConversation(conversation);
@@ -428,9 +455,9 @@ export const ChatPage: React.FC = () => {
         prompt: trimmed,
         streamContent: "",
       };
-      // keep the list scrolled to bottom while fetching
+      // keep the list scrolled to bottom while fetching, unless user scrolled away
       const container = messagesContainerRef.current;
-      if (container) {
+      if (container && autoScroll) {
         container.scrollTo({ top: container.scrollHeight, behavior: "smooth" });
       }
     }
@@ -1067,7 +1094,11 @@ export const ChatPage: React.FC = () => {
         </div>
       </div>
 
-      <div ref={messagesContainerRef} className="flex-1 overflow-y-auto pr-3 space-y-4">
+      <div
+        ref={messagesContainerRef}
+        onScroll={handleScroll}
+        className="flex-1 overflow-y-auto pr-3 space-y-4"
+      >
         {currentConversation.messages.length === 0 ? (
           <div className="rounded-2xl border border-slate-200 bg-white/95 shadow-lg px-6 py-5 text-sm leading-relaxed text-slate-700 whitespace-pre-wrap">
             {WELCOME_MESSAGE}
