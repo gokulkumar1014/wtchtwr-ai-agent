@@ -920,6 +920,14 @@ export const ChatPage: React.FC = () => {
     summaryData && (summaryView === "concise" ? summaryData.concise : summaryData.detailed);
   const renderSummaryContent = () => {
     if (!summaryData) return null;
+    const hasSections = Array.isArray(summaryData.concise_sections) && summaryData.concise_sections.length > 0;
+    const overviewLines =
+      summaryView === "concise" && summaryText && !hasSections
+        ? summaryText
+            .split(/\n+/)
+            .map((line) => line.trim())
+            .filter(Boolean)
+        : [];
     const renderStructuredList = (
       items?: string[],
       { allowHeadings = true }: SummaryListOptions = {},
@@ -957,18 +965,21 @@ export const ChatPage: React.FC = () => {
         </div>
       );
     };
-    if (summaryView === "concise" && summaryData.concise_sections?.length) {
+    if (summaryView === "concise" && hasSections) {
       return (
         <div className="space-y-4">
           {summaryData.concise_sections.map((section, index) => (
             <div
               key={`${section.title}-${index}`}
-              className="rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm"
+              className="rounded-2xl border border-slate-200 bg-white/95 px-4 py-4 shadow-sm"
             >
-              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">{section.title}</p>
-              <ul className="mt-2 list-disc pl-5 text-sm text-slate-700 space-y-1">
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">{section.title}</p>
+              <ul className="mt-2 space-y-2 text-sm leading-relaxed text-slate-800">
                 {(section.items ?? []).map((item, idx) => (
-                  <li key={idx}>{item}</li>
+                  <li key={idx} className="flex items-start gap-2">
+                    <span className="mt-2 h-1.5 w-1.5 flex-none rounded-full bg-slate-400" />
+                    <span className="flex-1 whitespace-pre-line">{item}</span>
+                  </li>
                 ))}
               </ul>
             </div>

@@ -356,6 +356,33 @@ def _escape_markdown_table_cell(text: str) -> str:
     return escaped.strip()
 
 
+def _shrink_action_backlog(backlog: List[Dict[str, Any]], max_entries: int = 6) -> List[Dict[str, Any]]:
+    """
+    Reduce action backlog payload to keep LLM context within limits.
+
+    - Caps number of backlog entries.
+    - Trims verbose fields like actions and sample_reviews.
+    """
+    if not backlog:
+        return []
+    trimmed: List[Dict[str, Any]] = []
+    for entry in backlog[:max_entries]:
+        safe = dict(entry or {})
+        if isinstance(safe.get("actions"), list):
+            safe["actions"] = safe["actions"][:3]
+        if isinstance(safe.get("sample_reviews"), list):
+            safe["sample_reviews"] = safe["sample_reviews"][:3]
+        sentiment = safe.get("sentiment")
+        if isinstance(sentiment, dict):
+            safe["sentiment"] = {
+                "label": sentiment.get("label"),
+                "hit_count": sentiment.get("hit_count"),
+                "compound": sentiment.get("compound"),
+            }
+        trimmed.append(safe)
+    return trimmed
+
+
 def _extract_rag_hits(preview_text: str) -> List[Dict[str, str]]:
     """Parse legacy bullet preview lines into structured RAG hit data."""
     hits: List[Dict[str, str]] = []
@@ -592,13 +619,13 @@ def render_triage_context(triage: Optional[Dict[str, Any]]) -> str:
     top5 = glance.get("top5_overview") or []
     if top5:
         lines.append("Top KPI winners (metrics first, sentiment second):")
-        for entry in top5[:5]:
+        for entry in top5[:3]:
             lines.append(f"- {_format_listing(entry)}")
 
     bottom5 = glance.get("bottom5_overview") or []
     if bottom5:
         lines.append("Bottom KPI laggards:")
-        for entry in bottom5[:5]:
+        for entry in bottom5[:3]:
             lines.append(f"- {_format_listing(entry)}")
 
     sentiment_summary = glance.get("sentiment_summary") or {}
@@ -784,8 +811,9 @@ def build_composer_input(
     preview_raw = render_result_markdown(rows, aggregates, rag_snippets)
     preview = _strip_sql_snippets(preview_raw)
     triage_block = render_triage_context(portfolio_triage)
-    action_backlog = (portfolio_triage or {}).get("action_backlog") or []
+    action_backlog = _shrink_action_backlog((portfolio_triage or {}).get("action_backlog") or [])
     has_sql_rows = bool(rows)
+    rag_snippets = rag_snippets[:12] if rag_snippets else []
     has_rag_snippets = bool(rag_snippets)
     expansion_block = _render_expansion_sources(expansion_sources or [])
 

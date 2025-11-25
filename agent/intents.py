@@ -223,9 +223,10 @@ _AMENITY_RAG_PHRASES = {
 _GREETING_PHRASES = {"hi", "hey", "hello", "good morning", "good evening"}
 _THANKS_PHRASES = {"thank you", "thanks", "appreciate it", "thanks a lot", "much appreciated"}
 _SMALLTALK_PHRASES = {"how does this work", "help", "who are you", "what can you do", "tell me about yourself"}
-_TRIAGE_KEYWORDS = {"triage", "action plan", "playbook", "backlog", "portfolio health", "diagnose"}
+_TRIAGE_KEYWORDS = {"triage","traige", "action plan", "playbook", "backlog", "portfolio health", "diagnose"}
 _TRIAGE_PHRASES = (
     "portfolio triage",
+    "portfolio traige",
     "portfolio analysis",
     "triage for",
     "triage portfolio",

@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple, Union
 from uuid import uuid4
 
 import duckdb
@@ -1756,12 +1756,17 @@ def _structured_html_list(
 
 
 def _build_concise_sections(
-    focus: Optional[str],
+    focus: Optional[Union[str, Sequence[str]]],
     insights: Optional[Sequence[str]],
     next_steps: Optional[Sequence[str]],
 ) -> List[Dict[str, Any]]:
     sections: List[Dict[str, Any]] = []
-    focus_items = _format_bullets([focus])
+    if focus is None:
+        focus_items: List[str] = []
+    elif isinstance(focus, str):
+        focus_items = _format_bullets([focus])
+    else:
+        focus_items = _format_bullets(list(focus))
     if focus_items:
         sections.append({"title": "Focus", "items": focus_items})
     insight_items = _format_bullets(insights or [])
@@ -1854,7 +1859,7 @@ def _extract_json_block(text: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-def _prepare_trace(messages: Sequence[Dict[str, Any]], limit: int = SUMMARY_TRACE_LIMIT) -> List[Dict[str, str]]:
+def _prepare_trace(messages: Sequence[Dict[str, Any]], limit: Optional[int] = SUMMARY_TRACE_LIMIT) -> List[Dict[str, str]]:
     trace: List[Dict[str, str]] = []
     for message in messages:
         role = message.get("role")
@@ -1864,7 +1869,7 @@ def _prepare_trace(messages: Sequence[Dict[str, Any]], limit: int = SUMMARY_TRAC
         if not text:
             continue
         trace.append({"role": str(role), "content": text})
-    if len(trace) > limit:
+    if limit is not None and len(trace) > limit:
         trace = trace[-limit:]
     return trace
 
@@ -1890,7 +1895,7 @@ def _resolve_thread_candidates(conn: duckdb.DuckDBPyConnection, conversation_id:
     return candidates
 
 
-def _load_trace_from_memory(thread_candidates: Sequence[str]) -> List[Dict[str, str]]:
+def _load_trace_from_memory(thread_candidates: Sequence[str], *, limit: Optional[int] = None) -> List[Dict[str, str]]:
     for thread_id in thread_candidates:
         if not thread_id:
             continue
@@ -1901,10 +1906,61 @@ def _load_trace_from_memory(thread_candidates: Sequence[str]) -> List[Dict[str, 
             continue
         raw_trace = memory.get("conversation_trace") or memory.get("history")
         if isinstance(raw_trace, list):
-            trace = _prepare_trace(raw_trace, SUMMARY_TRACE_LIMIT)
+            trace = _prepare_trace(raw_trace, limit)
             if trace:
                 return trace
     return []
+
+
+def _load_memory_payload(thread_candidates: Sequence[str]) -> Dict[str, Any]:
+    for thread_id in thread_candidates:
+        if not thread_id:
+            continue
+        try:
+            memory = get_memory_context(thread_id) or {}
+            if memory:
+                return memory
+        except Exception as exc:  # pragma: no cover - defensive logging
+            logger.warning("[Summary] Memory fetch failed for %s: %s", thread_id, exc)
+    return {}
+
+
+def _merge_traces(primary: Sequence[Dict[str, str]], secondary: Sequence[Dict[str, str]]) -> List[Dict[str, str]]:
+    """Merge two traces, preferring the full conversation order from primary."""
+    merged: List[Dict[str, str]] = []
+    seen: Set[Tuple[str, str]] = set()
+
+    def _append(turn: Dict[str, str]) -> None:
+        role = str(turn.get("role") or "")
+        content = str(turn.get("content") or "")
+        key = (role, content)
+        if not content or key in seen:
+            return
+        merged.append({"role": role, "content": content})
+        seen.add(key)
+
+    for turn in primary:
+        _append(turn)
+    for turn in secondary:
+        _append(turn)
+    return merged
+
+
+def _trace_to_pairs(trace: Sequence[Dict[str, str]]) -> List[Tuple[str, str]]:
+    """Convert a role/content trace into user→assistant pairs."""
+    pairs: List[Tuple[str, str]] = []
+    pending_question: Optional[str] = None
+    for turn in trace:
+        role = turn.get("role")
+        content = (turn.get("content") or "").strip()
+        if not content:
+            continue
+        if role == "user":
+            pending_question = content
+        elif role == "assistant" and pending_question:
+            pairs.append((pending_question, content))
+            pending_question = None
+    return pairs
 
 
 def _trace_to_transcript(trace: Sequence[Dict[str, str]]) -> str:
@@ -1969,15 +2025,176 @@ def _summarize_trace_with_llm(trace: Sequence[Dict[str, str]]) -> Optional[List[
         return None
 
 
-def _fallback_concise_from_trace(trace: Sequence[Dict[str, str]]) -> List[Dict[str, Any]]:
-    last_user = next((turn for turn in reversed(trace) if turn.get("role") == "user"), None)
-    last_agent = next((turn for turn in reversed(trace) if turn.get("role") == "assistant"), None)
-    focus = last_user.get("content") if last_user else None
-    insights = [last_agent.get("content")] if last_agent else []
-    next_steps = []
-    if last_user and last_agent:
-        next_steps.append("Request a deeper breakdown of these metrics or compare another borough or timeframe.")
-    sections = _build_concise_sections(focus, insights, next_steps)
+def _trim_highlight(text: str, limit: int = 200) -> str:
+    cleaned = (text or "").strip()
+    if len(cleaned) <= limit:
+        return cleaned
+    return f"{cleaned[:limit - 3].rstrip()}..."
+
+
+def _table_highlights(tables: Sequence[Dict[str, Any]], limit: int = 3) -> List[str]:
+    highlights: List[str] = []
+    for table in tables:
+        headers = table.get("headers") or []
+        rows = table.get("rows") or []
+        if len(headers) < 2 or not rows:
+            continue
+        label_idx, value_idx = 0, 1
+        for row in rows:
+            if len(row) <= max(label_idx, value_idx):
+                continue
+            label = str(row[label_idx]).strip()
+            value = str(row[value_idx]).strip()
+            if not label or not value:
+                continue
+            highlights.append(_trim_highlight(f"{label}: {value}"))
+            if len(highlights) >= limit:
+                return highlights
+    return highlights
+
+
+def _text_highlights(text: str, limit: int = 4) -> List[str]:
+    highlights: List[str] = []
+    if not text:
+        return highlights
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    bullet_prefix = re.compile(r"^(\d+[\).]|[-*•·‣▪‒–—])\s+")
+    for line in lines:
+        lowered = line.lower()
+        candidate = None
+        if lowered.startswith("theme:"):
+            candidate = line.split(":", 1)[1].strip() or line
+        elif lowered.startswith("operator read"):
+            candidate = line.split(":", 1)[1].strip() or line
+        elif bullet_prefix.match(line):
+            candidate = bullet_prefix.sub("", line).strip() or line
+        if candidate and "|" not in candidate:
+            highlights.append(_trim_highlight(_clean_summary_line(candidate) or candidate))
+        if len(highlights) >= limit:
+            return highlights
+    if highlights:
+        return highlights
+    sentences = re.split(r"(?<=[\.!?])\s+", text.strip())
+    for sentence in sentences:
+        cleaned = _clean_summary_line(sentence)
+        if not cleaned or "|" in cleaned:
+            continue
+        highlights.append(_trim_highlight(cleaned))
+        if len(highlights) >= limit:
+            break
+    return highlights
+
+
+def _extract_insight_highlights(text: Optional[str], limit: int = 6) -> List[str]:
+    if not text:
+        return []
+    tables, remainder = _extract_markdown_table_block(text)
+    highlights = _table_highlights(tables, limit=limit)
+    remaining_slots = max(limit - len(highlights), 0)
+    if remaining_slots:
+        highlights.extend(_text_highlights(remainder, limit=remaining_slots))
+    return highlights
+
+
+def _focus_items_from_pairs(pairs: Sequence[Tuple[str, str]], limit: int = 5) -> List[str]:
+    items: List[str] = []
+    seen: Set[str] = set()
+    for question, _ in pairs:
+        cleaned = _clean_summary_line(question)
+        if not cleaned or cleaned in seen:
+            continue
+        seen.add(cleaned)
+        items.append(_trim_highlight(cleaned))
+        if len(items) >= limit:
+            break
+    return items
+
+
+def _insight_items_from_pairs(
+    pairs: Sequence[Tuple[str, str]],
+    *,
+    extra_insights: Optional[Sequence[str]] = None,
+    limit: int = 6,
+) -> List[str]:
+    items: List[str] = []
+    per_pair: List[Tuple[str, List[str]]] = []
+    for question, answer in pairs:
+        question_label = _trim_highlight(_clean_summary_line(question) or question or "Conversation insight")
+        highlights = _extract_insight_highlights(answer, limit=4)
+        if not highlights:
+            fallback = _clean_summary_line(answer) or answer
+            if fallback:
+                highlights = [_trim_highlight(fallback)]
+        if highlights:
+            per_pair.append((question_label, highlights))
+
+    for label, highlights in per_pair:
+        if not highlights:
+            continue
+        summary = "; ".join(highlights[:3])
+        items.append(f"{label}: {summary}")
+        if len(items) >= limit:
+            return items
+
+    if extra_insights:
+        for insight in extra_insights:
+            snippet_highlights = _extract_insight_highlights(insight)
+            if not snippet_highlights:
+                continue
+            summary = "; ".join(snippet_highlights[:3])
+            if summary and summary not in items:
+                items.append(summary)
+            if len(items) >= limit:
+                return items
+    return items
+
+
+def _derive_next_steps(
+    focus_items: Sequence[str],
+    insight_items: Sequence[str],
+    memory_payload: Optional[Dict[str, Any]] = None,
+) -> List[str]:
+    text = " ".join(list(focus_items) + list(insight_items)).lower()
+    steps: List[str] = []
+    if not text and memory_payload:
+        text = " ".join(str(v).lower() for v in memory_payload.values() if isinstance(v, str))
+
+    price_keywords = ("price", "adr", "rate", "cost", "market")
+    review_keywords = ("review", "feedback", "sentiment", "communication", "clean", "noise")
+    amenity_keywords = ("amenit", "feature", "facility", "furnish", "bed", "kitchen")
+
+    last_intent = ""
+    if memory_payload:
+        last_intent = str(memory_payload.get("last_intent") or "").upper()
+
+    def _has(tokens: Sequence[str]) -> bool:
+        return any(token in text for token in tokens)
+
+    if _has(price_keywords) or last_intent in {"FACT_SQL", "FACT_SQL_RAG"}:
+        steps.append("Compare pricing trends across boroughs or benchmark Highbury ADR against market averages.")
+    if _has(review_keywords) or last_intent in {"REVIEWS_RAG", "RAG"}:
+        steps.append("Dig into recent guest reviews to prioritize fixes (cleaning, responsiveness, access).")
+    if _has(amenity_keywords):
+        steps.append("Audit amenity coverage versus competitors and flag gaps that impact booking decisions.")
+
+    if not steps:
+        steps.append("Request deeper breakdowns or compare another borough, timeframe, or segment.")
+    return steps[:2]
+
+
+def _fallback_concise_from_trace(
+    trace: Sequence[Dict[str, str]],
+    *,
+    extra_insights: Optional[Sequence[str]] = None,
+    memory_payload: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
+    pairs = _trace_to_pairs(trace)
+    focus_items = _focus_items_from_pairs(pairs)
+    insight_items = _insight_items_from_pairs(pairs, extra_insights=extra_insights)
+
+    next_steps = _derive_next_steps(focus_items, insight_items, memory_payload)
+
+    sections = _build_concise_sections(focus_items, insight_items, next_steps)
     if sections:
         return sections
     fallback = _build_concise_sections(None, [trace[-1].get("content")] if trace else [], [])
@@ -1990,7 +2207,19 @@ def _build_concise_summary(
     thread_candidates: Sequence[str],
     fallback_trace: Sequence[Dict[str, str]],
 ) -> Tuple[str, List[Dict[str, Any]]]:
-    trace = _load_trace_from_memory(thread_candidates)
+    memory_trace = _load_trace_from_memory(thread_candidates, limit=None)
+    memory_payload = _load_memory_payload(thread_candidates)
+    memory_insights: List[str] = []
+    for key in ("answer_summary", "last_summary", "last_answer"):
+        val = memory_payload.get(key)
+        if isinstance(val, str) and val.strip():
+            memory_insights.append(val.strip())
+    if not memory_insights:
+        recent_bundle_summary = (memory_payload.get("last_sql") or {}).get("summary")
+        if isinstance(recent_bundle_summary, str) and recent_bundle_summary.strip():
+            memory_insights.append(recent_bundle_summary.strip())
+
+    trace = _merge_traces(fallback_trace, memory_trace) if fallback_trace or memory_trace else []
     if not trace:
         trace = list(fallback_trace)
     if not trace:
@@ -1998,7 +2227,11 @@ def _build_concise_summary(
         return _sections_to_markdown(default_sections), default_sections
     sections = _summarize_trace_with_llm(trace)
     if not sections:
-        sections = _fallback_concise_from_trace(trace)
+        sections = _fallback_concise_from_trace(
+            trace,
+            extra_insights=memory_insights,
+            memory_payload=memory_payload,
+        )
     text = _sections_to_markdown(sections)
     if not text:
         text = "Not enough conversation history to summarise."
@@ -2347,7 +2580,7 @@ def _build_conversation_summary(conversation_id: str) -> ConversationSummaryResp
         thread_candidates = _resolve_thread_candidates(conn, conversation_id)
 
     messages = conversation.get("messages") or []
-    trace = _prepare_trace(messages, SUMMARY_TRACE_LIMIT)
+    trace = _prepare_trace(messages, limit=None)
     if len(trace) < 2:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Not enough data to summarise.")
 
