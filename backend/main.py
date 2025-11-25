@@ -1724,6 +1724,52 @@ def _clean_summary_line(value: Optional[str]) -> str:
     return line.strip()
 
 
+def _dedupe_preserve_order(items: Sequence[str], limit: Optional[int] = None) -> List[str]:
+    seen: Set[str] = set()
+    output: List[str] = []
+    for item in items:
+        if not item:
+            continue
+        if item in seen:
+            continue
+        seen.add(item)
+        output.append(item)
+        if limit is not None and len(output) >= limit:
+            break
+    return output
+
+
+def _truncate_summary_text(value: Optional[str], limit: int = 180) -> str:
+    if not value:
+        return ""
+    text = str(value)
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 3)].rstrip() + "..."
+
+
+def _extract_sentences(text: str, max_sentences: int = 2) -> List[str]:
+    """Return clean sentences without table/header noise."""
+    cleaned = _clean_summary_line(text)
+    if not cleaned:
+        return []
+    lines = [ln.strip() for ln in cleaned.splitlines() if ln.strip()]
+    filtered_lines = [
+        ln for ln in lines if "|" not in ln and not ln.startswith("---") and not ln.startswith("```")
+    ]
+    collapsed = " ".join(filtered_lines) if filtered_lines else cleaned
+    parts = re.split(r"(?<=[.!?])\s+", collapsed)
+    sentences: List[str] = []
+    for part in parts:
+        snippet = part.strip()
+        if not snippet:
+            continue
+        sentences.append(snippet)
+        if len(sentences) >= max_sentences:
+            break
+    return sentences
+
+
 def _format_bullets(items: Sequence[Optional[str]]) -> List[str]:
     formatted: List[str] = []
     for item in items:
@@ -2062,6 +2108,82 @@ def _summarize_trace_with_llm(trace: Sequence[Dict[str, str]]) -> Optional[List[
 
 
 def _fallback_concise_from_trace(trace: Sequence[Dict[str, str]]) -> List[Dict[str, Any]]:
+    pairs = _pair_turns(trace)
+    if pairs:
+        def _focus_fragment(text: str) -> str:
+            fragment = _clean_summary_line(text)
+            fragment = re.sub(r"[?!.]+$", "", fragment)
+            fragment = re.sub(r"^(what|where|how|do|does|did|can|could|should|would|why)\b\s*", "", fragment, flags=re.I)
+            fragment = fragment.strip()
+            return _truncate_summary_text(fragment, 160)
+
+        def _answer_snippet(answer: str) -> str:
+            sentences = _extract_sentences(answer, max_sentences=2)
+            if not sentences:
+                cleaned = _clean_summary_line(answer)
+                return _truncate_summary_text(cleaned, 180) if cleaned else ""
+            candidate = sentences[0]
+            if len(candidate) < 90 and len(sentences) > 1:
+                candidate = f"{candidate} {sentences[1]}"
+            return _truncate_summary_text(candidate, 180)
+
+        focus_fragments = _dedupe_preserve_order([_focus_fragment(q) for q, _ in pairs if q], limit=4)
+        focus = None
+        if focus_fragments:
+            focus = "We covered " + "; ".join(focus_fragments)
+
+        insight_candidates: List[str] = []
+        aggregate_lines: List[str] = []
+        for _, answer in pairs:
+            sentences = _extract_sentences(answer, max_sentences=2)
+            if sentences:
+                aggregate_lines.extend(sentences)
+            snippet = _answer_snippet(answer)
+            if snippet:
+                insight_candidates.append(snippet)
+            if len(insight_candidates) >= 8:
+                break
+        insights = _dedupe_preserve_order(insight_candidates, limit=6)
+        if aggregate_lines:
+            unique_lines = _dedupe_preserve_order(
+                [_truncate_summary_text(line, 200) for line in aggregate_lines],
+                limit=12,
+            )
+            summary_chunks: List[str] = []
+            if unique_lines:
+                summary_chunks.append(" ".join(unique_lines[:2]))
+                mid_start = max(0, len(unique_lines) // 3)
+                summary_chunks.append(" ".join(unique_lines[mid_start : mid_start + 2]))
+                summary_chunks.append(" ".join(unique_lines[-2:]))
+            rolled_up_bullets = [
+                _truncate_summary_text(chunk, 230)
+                for chunk in summary_chunks
+                if chunk and chunk.strip()
+            ]
+            rolled_up_bullets = _dedupe_preserve_order(rolled_up_bullets, limit=3)
+            if rolled_up_bullets:
+                insights = _dedupe_preserve_order([*rolled_up_bullets, *insights], limit=6)
+
+        def _humanize_topic(text: Optional[str]) -> str:
+            if not text:
+                return ""
+            topic = str(text).strip().rstrip(".;")
+            return topic[0].lower() + topic[1:] if topic else ""
+
+        next_steps: List[str] = []
+        focus_target = focus_fragments[-1] if focus_fragments else None
+        topic_hint = _humanize_topic(focus_target)
+        if topic_hint:
+            next_steps.append(f"Ask for a deeper breakdown or comparison on {topic_hint}.")
+        if len(pairs) >= 3:
+            next_steps.append("Request a short action plan distilled from these insights.")
+        if not next_steps:
+            next_steps.append("Ask for deeper breakdowns or comparisons if you need more detail.")
+
+        sections = _build_concise_sections(focus, insights, next_steps)
+        if sections:
+            return sections
+
     last_user = next((turn for turn in reversed(trace) if turn.get("role") == "user"), None)
     last_agent = next((turn for turn in reversed(trace) if turn.get("role") == "assistant"), None)
     focus = last_user.get("content") if last_user else None

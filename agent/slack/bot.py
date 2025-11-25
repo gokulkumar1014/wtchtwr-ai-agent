@@ -31,6 +31,11 @@ BACKEND_BASE_URL = os.getenv("SLACK_BACKEND_URL", "http://127.0.0.1:8000")
 DASHBOARD_URL = f"{FRONTEND_URL}/dashboard"
 HELP_URL = FRONTEND_URL
 EXPORT_URL = f"{DASHBOARD_URL}#export"
+BACKEND_CONNECT_TIMEOUT = float(os.getenv("SLACK_BACKEND_CONNECT_TIMEOUT", "10"))
+BACKEND_READ_TIMEOUT = float(os.getenv("SLACK_BACKEND_TIMEOUT", "240"))
+# Tuple -> (connect timeout, read timeout)
+BACKEND_TIMEOUT = (BACKEND_CONNECT_TIMEOUT, BACKEND_READ_TIMEOUT)
+
 GREETING_RESPONSE = "Hi there! I’m wtchtwr — your portfolio co-pilot. How can I help?"
 WELCOME_MESSAGE = (
     "Hi there! I’m *wtchtwr* 👋\n\n"
@@ -62,7 +67,10 @@ def _ensure_conversation(thread_key: str) -> str:
     """Create or reuse a conversation mapped to a Slack thread/channel."""
     if thread_key in _THREAD_CONVERSATIONS:
         return _THREAD_CONVERSATIONS[thread_key]
-    resp = requests.post(f"{BACKEND_BASE_URL}/api/conversations", timeout=15)
+    try:
+        resp = requests.post(f"{BACKEND_BASE_URL}/api/conversations", timeout=BACKEND_TIMEOUT)
+    except requests.exceptions.Timeout as exc:
+        raise RuntimeError(f"Backend conversation bootstrap timed out after {BACKEND_READ_TIMEOUT} seconds.") from exc
     logger.info("[Slack] create conversation -> %s", resp.status_code)
     resp.raise_for_status()
     data = resp.json()
@@ -77,11 +85,17 @@ def _invoke_backend(question: str, *, thread_key: str) -> Dict[str, Any]:
     """Call the same backend conversation endpoint the web UI uses."""
     convo_id = _ensure_conversation(thread_key)
     payload = {"query": question, "stream": False}
-    resp = requests.post(
-        f"{BACKEND_BASE_URL}/api/conversations/{convo_id}/messages",
-        json=payload,
-        timeout=60,
-    )
+    try:
+        resp = requests.post(
+            f"{BACKEND_BASE_URL}/api/conversations/{convo_id}/messages",
+            json=payload,
+            timeout=BACKEND_TIMEOUT,
+        )
+    except requests.exceptions.Timeout as exc:
+        raise RuntimeError(
+            f"Backend took longer than {BACKEND_READ_TIMEOUT} seconds to respond. "
+            "Try narrowing the question or raise SLACK_BACKEND_TIMEOUT."
+        ) from exc
     logger.info("[Slack] backend conversation %s -> %s", convo_id, resp.status_code)
     if not resp.ok:
         logger.error("[Slack] backend error: %s", resp.text[:500])
@@ -96,6 +110,57 @@ def _invoke_backend(question: str, *, thread_key: str) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Formatting helpers
 # ---------------------------------------------------------------------------
+
+def _split_md_row(row: str) -> List[str]:
+    """Split a markdown table row into cells."""
+    trimmed = row.strip()
+    if trimmed.startswith("|"):
+        trimmed = trimmed[1:]
+    if trimmed.endswith("|"):
+        trimmed = trimmed[:-1]
+    return [cell.strip() for cell in trimmed.split("|")]
+
+
+def _render_markdown_table_block(lines: List[str]) -> str:
+    """Convert a markdown table block to a monospace code block for Slack."""
+    if not lines:
+        return ""
+
+    rows: List[List[str]] = []
+    for ln in lines:
+        cells = _split_md_row(ln)
+        if cells and any(cells):
+            rows.append(cells)
+
+    # Drop separator row if present
+    if len(rows) >= 2:
+        separator = rows[1]
+        if all(re.fullmatch(r":?-{2,}:?", cell) for cell in separator):
+            rows.pop(1)
+
+    if not rows:
+        return ""
+
+    col_count = max(len(r) for r in rows)
+    widths = [0] * col_count
+    for r in rows:
+        for idx in range(col_count):
+            val = r[idx] if idx < len(r) else ""
+            widths[idx] = max(widths[idx], len(val))
+
+    def fmt_row(row: List[str]) -> str:
+        padded = []
+        for idx in range(col_count):
+            val = row[idx] if idx < len(row) else ""
+            padded.append(val.ljust(widths[idx]))
+        return " | ".join(padded)
+
+    formatted_rows = [fmt_row(r) for r in rows]
+    divider = " | ".join("-" * w for w in widths)
+    body_lines = [formatted_rows[0], divider] + formatted_rows[1:]
+    body = "\n".join(body_lines)
+    return f"```text\n{body}\n```"
+
 
 def _normalize_summary(message: Dict[str, Any]) -> str:
     payload = message.get("payload") or {}
@@ -291,7 +356,7 @@ def _chunk_text(text: str, limit: int = 2800) -> List[str]:
 def _format_for_slack(text: str) -> str:
     """
     Transform web-optimized markdown into Slack-friendly mrkdwn.
-    - Remove code fences and raw tables.
+    - Remove code fences and convert markdown tables to monospace blocks.
     - Simplify headings to bold lines.
     - Normalize bold markers.
     - Soft-wrap single newlines within paragraphs, keep double newlines.
@@ -319,11 +384,14 @@ def _format_for_slack(text: str) -> str:
                 i += 1
             i += 1
             continue
-        # Skip markdown tables in summary (we render structured tables separately)
-        if "|" in line and re.search(r"\|\s*-", line):
+        # Convert markdown tables in summaries into Slack monospace tables
+        if "|" in line and (i + 1) < n and re.search(r"\|\s*-", lines[i + 1]):
             j = i
+            table_lines: List[str] = []
             while j < n and "|" in lines[j]:
+                table_lines.append(lines[j])
                 j += 1
+            cleaned.append(_render_markdown_table_block(table_lines))
             i = j
             continue
         cleaned.append(line)
@@ -331,6 +399,9 @@ def _format_for_slack(text: str) -> str:
 
     processed: List[str] = []
     for line in cleaned:
+        if line.startswith("```"):
+            processed.append(line)
+            continue
         line = re.sub(r"\*\*(.+?)\*\*", r"*\1*", line)
         heading_match = re.match(r"^\s*#{1,6}\s*(.+?)\s*$", line)
         if heading_match:
@@ -348,7 +419,11 @@ def _format_for_slack(text: str) -> str:
     paragraphs = joined.split("\n\n")
     normalized: List[str] = []
     for para in paragraphs:
-        soft = re.sub(r"\s*\n\s*", " ", para).strip()
+        para_strip = para.strip()
+        if para_strip.startswith("```"):
+            normalized.append(para_strip)
+            continue
+        soft = re.sub(r"\s*\n\s*", " ", para_strip).strip()
         if soft:
             normalized.append(soft)
     return "\n\n".join(normalized).strip()
