@@ -1,19 +1,15 @@
-"""
-LangGraph-backed Slack bot for H.O.P.E AI (Highbury Occupancy Property Engine).
-
-Once validated, this module replaces all legacy Slack wiring in /app/slackbot
-and decommissions remaining /app/nl2sql dependencies.
-"""
+"""Slack bot for wtchtwr that reuses the same conversation pipeline as the web UI."""
 
 from __future__ import annotations
 import logging
 import os
 import re
 import uuid
-from functools import lru_cache
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
+import requests
 from slack_bolt import App
+from slack_bolt.adapter.socket_mode import SocketModeHandler
 from slack_sdk.errors import SlackApiError
 from slack_sdk.web import WebClient
 
@@ -31,24 +27,26 @@ GREETING_PATTERN = re.compile(
 )
 
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
-DASHBOARD_URL = "https://insideairbnb.com/new-york-city/"
-GREETING_RESPONSE = "Hi there, how may I help you today?"
+BACKEND_BASE_URL = os.getenv("SLACK_BACKEND_URL", "http://127.0.0.1:8000")
+DASHBOARD_URL = f"{FRONTEND_URL}/dashboard"
+HELP_URL = FRONTEND_URL
+EXPORT_URL = f"{DASHBOARD_URL}#export"
+GREETING_RESPONSE = "Hi there! I’m wtchtwr — your portfolio co-pilot. How can I help?"
 WELCOME_MESSAGE = (
-    "Hi there! I'm *H.O.P.E.* (Highbury Occupancy Property Engine) 👋\n\n"
-    "You can ask me things like:\n"
+    "Hi there! I’m *wtchtwr* 👋\n\n"
+    "wtchtwr is a portfolio intelligence co-pilot for STR operators. It blends NL→SQL analytics, review retrieval, sentiment scoring, portfolio triage, competitor benchmarking, and amenity diagnostics so you can interrogate every KPI from one prompt bar.\n\n"
+    "Ask me things like:\n"
     "• \"Average occupancy rate for next 60 days for my listings in Manhattan\"\n"
     "• \"Which of my properties have paid parking?\"\n"
     "• \"Compare avg price in Midtown: mine vs market\"\n"
-    "• \"Show the latest 5 reviews for listing 2595\"\n\n"
-    "Useful shortcuts:\n"
-    "• Type *help* for available actions\n"
-    "• Type *dashboard* to open the dashboard\n"
-    "• Type *clear* to clean this thread\n"
-    "_LangGraph orchestration active._"
+    "• \"Show the latest 5 reviews for listing 2595\"\n"
+    "• \"Be a portfolio triage agent and diagnose Highbury listings in Manhattan\"\n\n"
+    "Shortcuts: *help* for prompts · *dashboard* to open wtchtwr · *clear* to reset · *export* for export options."
 )
 
 MAX_CACHE_ENTRIES = 50
 _RESULT_CACHE: Dict[str, Dict[str, Any]] = {}
+_THREAD_CONVERSATIONS: Dict[str, str] = {}
 _LAST_PAYLOAD: Optional[Dict[str, Any]] = None
 
 # ---------------------------------------------------------------------------
@@ -60,40 +58,53 @@ def _ensure_config_loaded() -> None:
     load_config(refresh=False)
 
 
-@lru_cache(maxsize=1)
-def _langgraph_runner():
-    """Lazy import of the LangGraph runner to avoid heavy imports on module load."""
-    from agent.graph import run as run_agent
-    return run_agent
+def _ensure_conversation(thread_key: str) -> str:
+    """Create or reuse a conversation mapped to a Slack thread/channel."""
+    if thread_key in _THREAD_CONVERSATIONS:
+        return _THREAD_CONVERSATIONS[thread_key]
+    resp = requests.post(f"{BACKEND_BASE_URL}/api/conversations", timeout=15)
+    logger.info("[Slack] create conversation -> %s", resp.status_code)
+    resp.raise_for_status()
+    data = resp.json()
+    convo_id = data.get("id")
+    if not convo_id:
+        raise RuntimeError("Unable to create conversation for Slack thread.")
+    _THREAD_CONVERSATIONS[thread_key] = convo_id
+    return convo_id
 
 
-def run_langgraph_query(question: str, *, thread_id: Optional[str] = None) -> Dict[str, Any]:
-    """Execute the LangGraph pipeline for the given question."""
-    _ensure_config_loaded()
-    runner = _langgraph_runner()
-    logger.info("[Slack] Dispatching LangGraph query")
-    response = runner(question, thread_id=thread_id)
-    logger.info("[Slack] LangGraph query completed (keys: %s)", list(response.keys()))
-    return response or {}
+def _invoke_backend(question: str, *, thread_key: str) -> Dict[str, Any]:
+    """Call the same backend conversation endpoint the web UI uses."""
+    convo_id = _ensure_conversation(thread_key)
+    payload = {"query": question, "stream": False}
+    resp = requests.post(
+        f"{BACKEND_BASE_URL}/api/conversations/{convo_id}/messages",
+        json=payload,
+        timeout=60,
+    )
+    logger.info("[Slack] backend conversation %s -> %s", convo_id, resp.status_code)
+    if not resp.ok:
+        logger.error("[Slack] backend error: %s", resp.text[:500])
+    resp.raise_for_status()
+    conversation = resp.json()
+    messages = conversation.get("messages") or []
+    assistant = next((m for m in reversed(messages) if m.get("role") == "assistant"), None)
+    if not assistant:
+        raise RuntimeError("No assistant message returned from backend.")
+    return assistant
 
 # ---------------------------------------------------------------------------
 # Formatting helpers
 # ---------------------------------------------------------------------------
 
-def _normalize_summary(result: Dict[str, Any]) -> str:
-    """Normalize LangGraph output to a concise summary string."""
-    bundle = (result.get("result_bundle") or {}) if isinstance(result, dict) else {}
-    primary = (result.get("answer_text") or result.get("content") or "").strip()
+def _normalize_summary(message: Dict[str, Any]) -> str:
+    payload = message.get("payload") or {}
+    primary = (message.get("content") or message.get("nl_summary") or "").strip()
     if primary:
         return primary
-    summary = (bundle.get("summary") or "").strip()
+    summary = (payload.get("summary") or "").strip()
     if summary:
         return summary
-    extras = result.get("extras") if isinstance(result, dict) else {}
-    if isinstance(extras, dict):
-        extra_text = (extras.get("answer_text") or extras.get("content") or "").strip()
-        if extra_text:
-            return extra_text
     return "No insight available yet — try refining the question."
 
 
@@ -124,70 +135,71 @@ def _format_rows_preview(columns: Sequence[str], rows: Sequence[Dict[str, Any]],
     return "\n".join(parts).strip() or "(no rows returned)"
 
 
-def _build_table_payload(bundle: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Create Slack-friendly table preview payload."""
-    rows = bundle.get("rows") or []
-    rows = rows if isinstance(rows, list) else []
-    columns = _coerce_columns(bundle, rows)
-    markdown_table = (bundle.get("markdown_table") or "").strip()
-    if not markdown_table and columns:
-        markdown_table = _format_rows_preview(columns, rows)
-    return [
-        {
-            "name": bundle.get("sql_table") or "Result",
-            "columns": columns,
-            "data": rows[:50],
-            "preview": markdown_table or "(no rows returned)",
-            "row_count": len(rows),
-        }
-    ]
+def _build_table_payload(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+    tables = payload.get("tables") or []
+    normalized: List[Dict[str, Any]] = []
+    for table in tables:
+        if not isinstance(table, dict):
+            continue
+        name = table.get("name", "Result")
+        columns = table.get("columns") or []
+        rows = table.get("data") or []
+        preview = table.get("preview") or ""
+        row_count = table.get("row_count") or len(rows)
+        if not preview and columns:
+            preview = _format_rows_preview(columns, rows)
+        normalized.append(
+            {
+                "name": name,
+                "columns": columns,
+                "data": rows[:50],
+                "preview": preview or "(no rows returned)",
+                "row_count": row_count,
+            }
+        )
+    return normalized
 
 
-def _build_payload(question: str, result: Dict[str, Any]) -> Dict[str, Any]:
-    """Assemble a unified Slack message payload."""
-    bundle = (result.get("result_bundle") or {}) if isinstance(result, dict) else {}
-    summary = _normalize_summary(result)
-    tables = _build_table_payload(bundle) if bundle else []
-    sql_text = bundle.get("sql") or (result.get("sql") or {}).get("text") or ""
-    telemetry = result.get("telemetry") or {}
-
-    payload = {
+def _build_payload(question: str, message: Dict[str, Any]) -> Dict[str, Any]:
+    """Assemble a unified Slack message payload from the web conversation response."""
+    payload = message.get("payload") or {}
+    telemetry = payload.get("telemetry") or payload.get("policy") or {}
+    tables = _build_table_payload(payload)
+    sql_text = payload.get("sql") or ""
+    summary = _normalize_summary(message)
+    return {
         "question": question,
-        "policy": bundle.get("policy") or telemetry.get("policy"),
+        "policy": payload.get("policy") or telemetry.get("policy"),
         "sql": sql_text,
         "tables": tables,
         "summary": summary,
         "nl_summary": summary,
         "row_count": tables[0]["row_count"] if tables else 0,
-        "response_type": bundle.get("policy") or "sql",
-        "telemetry": telemetry,
-        "markdown_table": bundle.get("markdown_table"),
-        "filters": bundle.get("applied_filters") or {},
+        "response_type": payload.get("response_type") or payload.get("policy") or "sql",
+        "telemetry": payload.get("telemetry") or {},
+        "markdown_table": payload.get("markdown_table"),
+        "filters": payload.get("applied_filters") or payload.get("filters") or {},
     }
-    return payload
 
 # ---------------------------------------------------------------------------
 # Core interaction handlers
 # ---------------------------------------------------------------------------
 
 def handle_question(question: str, *, thread_id: Optional[str] = None) -> Dict[str, Any]:
-    """Resolve a Slack question via LangGraph and return payload + summary."""
+    """Resolve a Slack question via the same web conversation pipeline and return payload + summary."""
     global _LAST_PAYLOAD
     question_clean = (question or "").strip()
     if not question_clean:
         return {"error": "Please provide a question for me to analyse."}
 
+    thread_key = thread_id or "default"
     try:
-        result = run_langgraph_query(question_clean, thread_id=thread_id)
+        assistant_message = _invoke_backend(question_clean, thread_key=thread_key)
     except Exception as exc:
-        logger.exception("Slackbot failed to execute LangGraph query.")
+        logger.exception("Slackbot failed to execute conversation pipeline.")
         return {"error": f"Something went wrong while running the query: {exc}"}
 
-    bundle = (result.get("result_bundle") or {}) if isinstance(result, dict) else {}
-    if bundle.get("error"):
-        return {"error": bundle.get("summary") or bundle["error"]}
-
-    payload = _build_payload(question_clean, result)
+    payload = _build_payload(question_clean, assistant_message)
     _LAST_PAYLOAD = payload
     return {"payload": payload, "summary": payload["summary"]}
 
@@ -219,11 +231,11 @@ def _get_cached_payload(key: str) -> Optional[Dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 def _dashboard_message() -> str:
-    return f":bar_chart: *NYC Market Dashboard*\n<{DASHBOARD_URL}|Open InsideAirbnb dashboard>"
+    return f":bar_chart: *wtchtwr Dashboard*\n<{DASHBOARD_URL}|Open the wtchtwr dashboard>"
 
 
 def _clear_conversation(client: WebClient, channel: str, bot_user_id: str) -> str:
-    """Delete previous HOPE messages in a channel."""
+    """Delete previous messages in a channel (best-effort; Slack may restrict non-bot deletions)."""
     try:
         history = client.conversations_history(channel=channel, limit=200)
     except SlackApiError as exc:
@@ -232,16 +244,15 @@ def _clear_conversation(client: WebClient, channel: str, bot_user_id: str) -> st
     deleted = 0
     for message in history.get("messages", []):
         ts = message.get("ts")
-        if ts and (message.get("user") == bot_user_id or message.get("bot_id")):
-            try:
-                client.chat_delete(channel=channel, ts=ts)
-                deleted += 1
-            except SlackApiError:
-                continue
+        if not ts:
+            continue
+        try:
+            client.chat_delete(channel=channel, ts=ts)
+            deleted += 1
+        except SlackApiError:
+            continue
 
-    if deleted:
-        return "Cleared HOPE responses in this conversation."
-    return "No HOPE messages to clear (I can only remove messages posted by me)."
+    return ""
 
 
 def _respond(client: WebClient, channel: str, text: str,
@@ -255,36 +266,299 @@ def _respond(client: WebClient, channel: str, text: str,
     client.chat_postMessage(**kwargs)
 
 
+def _chunk_text(text: str, limit: int = 2800) -> List[str]:
+    """Chunk large markdown into Slack-safe sections without dropping content."""
+    text = text or ""
+    if len(text) <= limit:
+        return [text] if text else []
+    chunks: List[str] = []
+    current: List[str] = []
+    current_len = 0
+    for line in text.splitlines():
+        add_len = len(line) + 1  # newline
+        if current_len + add_len > limit and current:
+            chunks.append("\n".join(current))
+            current = [line]
+            current_len = len(line) + 1
+        else:
+            current.append(line)
+            current_len += add_len
+    if current:
+        chunks.append("\n".join(current))
+    return chunks
+
+
+def _format_for_slack(text: str) -> str:
+    """
+    Transform web-optimized markdown into Slack-friendly mrkdwn.
+    - Remove code fences and raw tables.
+    - Simplify headings to bold lines.
+    - Normalize bold markers.
+    - Soft-wrap single newlines within paragraphs, keep double newlines.
+    - Keep bullets readable.
+    """
+    if not text:
+        return ""
+
+    # Branding normalization
+    text = text.replace("\r\n", "\n")
+    text = re.sub(r"(?i)H\.?O\.?P\.?E\.?|Highbury Occupancy Property Engine", "wtchtwr", text)
+
+    lines = text.split("\n")
+    cleaned: List[str] = []
+    i = 0
+    n = len(lines)
+    while i < n:
+        line = lines[i].rstrip()
+        stripped = line.strip()
+        # Skip code fences
+        if stripped.startswith("```"):
+            i += 1
+            # skip until closing fence
+            while i < n and not lines[i].strip().startswith("```"):
+                i += 1
+            i += 1
+            continue
+        # Skip markdown tables in summary (we render structured tables separately)
+        if "|" in line and re.search(r"\|\s*-", line):
+            j = i
+            while j < n and "|" in lines[j]:
+                j += 1
+            i = j
+            continue
+        cleaned.append(line)
+        i += 1
+
+    processed: List[str] = []
+    for line in cleaned:
+        line = re.sub(r"\*\*(.+?)\*\*", r"*\1*", line)
+        heading_match = re.match(r"^\s*#{1,6}\s*(.+?)\s*$", line)
+        if heading_match:
+            heading_text = heading_match.group(1).strip()
+            heading_text = re.sub(r"^\*+(.*?)\*+$", r"\1", heading_text).strip()
+            processed.append(f"*{heading_text}*")
+            continue
+        bullet_match = re.match(r"^\s*[-*]\s+(.*)$", line)
+        if bullet_match:
+            processed.append(f"• {bullet_match.group(1).strip()}")
+            continue
+        processed.append(line)
+
+    joined = "\n".join(processed)
+    paragraphs = joined.split("\n\n")
+    normalized: List[str] = []
+    for para in paragraphs:
+        soft = re.sub(r"\s*\n\s*", " ", para).strip()
+        if soft:
+            normalized.append(soft)
+    return "\n\n".join(normalized).strip()
+
+
+def _format_table_as_list(table: Dict[str, Any], title: Optional[str] = None, max_rows: int = 5) -> str:
+    """
+    Convert a structured table into a Slack-friendly nested bullet list.
+    """
+    columns = [c.lower() for c in (table.get("columns") or [])]
+    rows = table.get("data") or []
+    if not columns or not rows:
+        return ""
+    rows = rows[:max_rows]
+
+    def get(row: Dict[str, Any], keys: List[str]) -> str:
+        for k in keys:
+            if k in row:
+                return str(row.get(k) or "")
+            # try case-insensitive
+            for actual in row.keys():
+                if actual.lower() == k:
+                    return str(row.get(actual) or "")
+        return ""
+
+    bullets: List[str] = []
+    if title:
+        bullets.append(f"*{title}*")
+
+    # Detect tier-style tables
+    for row in rows:
+        row_dict = row if isinstance(row, dict) else {}
+        listing = get(row_dict, ["listing_id", "listing", "id"])
+        area = get(row_dict, ["area", "neighbourhood", "neighborhood"])
+        issue = get(row_dict, ["issue"])
+        action = get(row_dict, ["recommended action (next 30 days)", "recommended_action", "recommended action"])
+        evidence = get(row_dict, ["evidence"])
+
+        if listing or area or issue or action or evidence:
+            header = f"• *Listing {listing} – {area}*" if listing or area else "• Listing"
+            bullets.append(header.strip())
+            if issue:
+                bullets.append(f"  • Issue: {issue}")
+            if action:
+                bullets.append(f"  • Recommended action: {action}")
+            if evidence:
+                bullets.append(f'  • Evidence: "{evidence}"')
+            continue
+
+        # Fallback: generic row listing
+        parts = [f"{col}: {row_dict.get(col, '')}" for col in table.get("columns", []) if row_dict.get(col, "")]
+        if parts:
+            bullets.append("• " + "; ".join(parts))
+
+    return "\n".join(bullets).strip()
+
+
+def _format_slack_answer(summary: str, payload: Dict[str, Any]) -> str:
+    """
+    Build a Slack-friendly mrkdwn string combining narrative + listified tables/snippets.
+    """
+    text = summary or ""
+    text = _format_for_slack(text)
+    # Prepend branding once
+    if text:
+        text = f"*wtchtwr — your property insights companion*\n\n{text}"
+
+    tables = payload.get("tables") or []
+    extras: List[str] = []
+
+    # Render tables as lists (no code fences)
+    for tbl in tables:
+        cols = [c.lower() for c in tbl.get("columns") or []]
+        if "snippet" in cols:
+            # Treat as sample feedback
+            snippet_lines = ["*Sample feedback*"]
+            data_rows = tbl.get("data") or []
+            for snip in data_rows[:5]:
+                row = snip if isinstance(snip, dict) else {}
+                listing = str(row.get("listing_id") or row.get("id") or "")
+                hood = row.get("neighbourhood") or row.get("neighborhood") or ""
+                month = row.get("month") or ""
+                year = row.get("year") or ""
+                sentiment = row.get("sentiment_label") or ""
+                compound = row.get("compound")
+                quote = (row.get("snippet") or row.get("text") or "").strip()
+                quote = quote[:180]
+                prefix_parts = []
+                if listing:
+                    prefix_parts.append(f"Listing {listing}")
+                if hood:
+                    prefix_parts.append(hood)
+                if month or year:
+                    prefix_parts.append(f"{month} {year}".strip())
+                if sentiment:
+                    prefix_parts.append(sentiment)
+                if compound not in (None, ""):
+                    prefix_parts.append(str(compound))
+                prefix = " | ".join([p for p in prefix_parts if p])
+                snippet_lines.append(f'• {prefix}: "{quote}"' if quote else f"• {prefix}")
+            extras.append("\n".join(snippet_lines))
+        else:
+            title = tbl.get("name") or None
+            extras_text = _format_table_as_list(tbl, title=title)
+            if extras_text:
+                extras.append(extras_text)
+
+    if extras:
+        text = text + "\n\n" + "\n\n".join(extras)
+    return text.strip()
+
+
+def render_slack_table(table: Dict[str, Any], max_rows: int = 8) -> str:
+    """Render a structured table as a padded monospace table inside a single code block."""
+    columns = table.get("columns") or []
+    rows = table.get("data") or []
+    if not columns:
+        return ""
+    rows = rows[:max_rows]
+    # Ensure each row is a list aligned with columns
+    formatted_rows: List[List[str]] = []
+    for row in rows:
+        if isinstance(row, dict):
+            formatted_rows.append([str(row.get(col, "")) for col in columns])
+        elif isinstance(row, (list, tuple)):
+            vals = list(row)[: len(columns)]
+            while len(vals) < len(columns):
+                vals.append("")
+            formatted_rows.append([str(v) for v in vals])
+        else:
+            formatted_rows.append([str(row)])
+
+    widths = [len(str(col)) for col in columns]
+    for r in formatted_rows:
+        for idx, val in enumerate(r):
+            if idx < len(widths):
+                widths[idx] = max(widths[idx], len(val))
+
+    def fmt_row(vals: List[str]) -> str:
+        padded = []
+        for idx, val in enumerate(vals):
+            width = widths[idx] if idx < len(widths) else len(val)
+            padded.append(val.ljust(width))
+        return " | ".join(padded)
+
+    lines_out = [fmt_row(columns)]
+    lines_out.append(" | ".join("-" * w for w in widths))
+    for r in formatted_rows:
+        lines_out.append(fmt_row(r))
+
+    body = "\n".join(lines_out)
+    return f"```text\n{body}\n```"
+
+
 def _build_blocks(summary: str, payload: Dict[str, Any], cache_key: str) -> List[Dict[str, Any]]:
-    return [
-        {"type": "section", "text": {"type": "mrkdwn", "text": summary}},
-        {
-            "type": "actions",
-            "elements": [
-                {
-                    "type": "button",
-                    "text": {"type": "plain_text", "text": "View SQL & Results"},
-                    "action_id": "view_sql_results",
-                    "value": cache_key,
-                }
-            ],
-        },
-    ]
+    blocks: List[Dict[str, Any]] = []
+    tables = payload.get("tables") or []
+
+    # Main narrative
+    summary_text = summary or "Here’s what I found:"
+
+    for chunk in _chunk_text(summary_text):
+        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": chunk}})
+    if not blocks:
+        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": "Here’s what I found:"}})
+
+    # Actions
+    blocks.append({
+        "type": "actions",
+        "elements": [
+            {
+                "type": "button",
+                "text": {"type": "plain_text", "text": "View SQL and RAG sources"},
+                "action_id": "view_sql_results",
+                "value": cache_key,
+            }
+        ],
+    })
+    return blocks
 
 
 def _open_modal(client: WebClient, trigger_id: str, payload: Dict[str, Any]) -> None:
     """Display SQL + table preview in Slack modal."""
-    sql = payload.get("sql") or ""
+    sql = str(payload.get("sql") or "").replace("\r\n", "\n")
     tables = payload.get("tables") or []
+    full_summary = _format_for_slack(str(payload.get("summary") or ""))
 
-    blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": f"*SQL*\n```{sql[:2000]}```"}}]
+    blocks = []
+
+    # Full narrative (chunked)
+    if full_summary:
+        for chunk in _chunk_text(f"*Full response*\n{full_summary}", limit=2800):
+            blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": chunk}})
+
+    # SQL
+    blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": f"*SQL*\n```sql\n{sql[:2000]}\n```"}})
+
+    # Tables
     for table in tables[:2]:
         name = table.get("name", "Result")
-        preview = (table.get("preview") or "(no rows returned)")[:1800]
+        preview = (table.get("preview") or "").replace("\r\n", "\n").strip()
+        if not preview:
+            columns = table.get("columns") or []
+            rows = table.get("data") or []
+            preview = _format_rows_preview(columns, rows, limit=8)
+        preview = preview or "(no rows returned)"
         rows = table.get("row_count", 0)
         blocks.append({
             "type": "section",
-            "text": {"type": "mrkdwn", "text": f"*{name}* (_{rows} rows_)\n```{preview}```"},
+            "text": {"type": "mrkdwn", "text": f"*{name}* (_{rows} rows_)\n```text\n{preview[:1600]}\n```"},
         })
 
     client.views_open(
@@ -305,14 +579,24 @@ def _open_modal(client: WebClient, trigger_id: str, payload: Dict[str, Any]) -> 
 def create_slack_app() -> App:
     bot_token = os.getenv("SLACK_BOT_TOKEN")
     signing_secret = os.getenv("SLACK_SIGNING_SECRET")
+    app_token = os.getenv("SLACK_APP_TOKEN")
     if not bot_token or not signing_secret:
         raise RuntimeError("SLACK_BOT_TOKEN and SLACK_SIGNING_SECRET must be set in the environment.")
 
     app = App(token=bot_token, signing_secret=signing_secret)
+    if app_token:
+        # stash for optional Socket Mode startup (avoids public HTTP endpoint)
+        setattr(app, "_app_token", app_token)
 
-    @app.event("message")
-    def debug_all_messages(event, say, logger):
-        logger.info(f"🪵 Raw message event received: {event}")
+    @app.middleware  # log all user messages without consuming the event
+    def log_raw_messages(body, logger, next):
+        event = (body or {}).get("event") or {}
+        if event.get("type") == "message" and not event.get("bot_id"):
+            logger.info("🪵 Raw message event received: %s", event)
+        return next()
+    @app.event({"type": "message", "subtype": "message_deleted"})
+    def handle_deleted_message_events(event, ack):
+        ack()
     auth_info = app.client.auth_test()
     bot_user_id = auth_info.get("user_id")
 
@@ -334,7 +618,7 @@ def create_slack_app() -> App:
                             "type": "section",
                             "text": {
                                 "type": "mrkdwn",
-                                "text": f"*{GREETING_RESPONSE}*\nStart with a natural language question about your listings or the market.",
+                                "text": f"*wtchtwr — your property insights companion*\nStart with a natural language question about your listings or the market.",
                             },
                         },
                         {"type": "divider"},
@@ -376,24 +660,37 @@ def create_slack_app() -> App:
 
         lowered = question.lower().strip()
         if lowered == "help":
-            _respond(client, channel=channel, text=WELCOME_MESSAGE, thread_ts=ts)
+            _respond(client, channel=channel, text=f"{WELCOME_MESSAGE}\n<{HELP_URL}|Open wtchtwr>", thread_ts=ts)
         elif lowered in {"dashboard", "open dashboard", "show dashboard"}:
             _respond(client, channel=channel, text=_dashboard_message(), thread_ts=ts)
         elif lowered == "clear":
-            message = _clear_conversation(client, channel, bot_user_id)
-            _respond(client, channel=channel, text=message, thread_ts=ts)
+            _clear_conversation(client, channel, bot_user_id)
+            return
         elif lowered == "export":
-            _respond(client, channel=channel, text="Use the HOPE web dashboard or SQL modal to export.", thread_ts=ts)
+            _respond(client, channel=channel, text=f"Export via the web dashboard: <{EXPORT_URL}|Open export options>", thread_ts=ts)
         else:
-            thread_ref = event.get("thread_ts") or ts or channel
-            outcome = handle_question(question, thread_id=thread_ref)
-            if "error" in outcome:
-                _respond(client, channel=channel, text=outcome["error"], thread_ts=ts)
-            else:
-                payload, summary = outcome["payload"], outcome["summary"]
-                cache_key = _store_payload(channel, payload, ts)
-                blocks = _build_blocks(summary, payload, cache_key)
-                _respond(client, channel=channel, text=summary, blocks=blocks, thread_ts=ts)
+            thread_ref = channel  # keep one conversation per channel/thread in Slack
+            logger.info("[Slack] Handling mention in %s (%s): %s", channel, thread_ref, question)
+            try:
+                outcome = handle_question(question, thread_id=thread_ref) or {}
+                if outcome.get("error"):
+                    _respond(client, channel=channel, text=outcome.get("error"), thread_ts=ts)
+                else:
+                    payload = outcome.get("payload")
+                    summary = outcome.get("summary") or outcome.get("answer_text") or ""
+                    if payload:
+                        summary = _format_slack_answer(summary, payload)
+                    if payload is None:
+                        _respond(client, channel=channel, text="No result returned for that question.", thread_ts=ts)
+                    else:
+                        cache_key = _store_payload(channel, payload, ts)
+                        blocks = _build_blocks(summary or "Here you go:", payload, cache_key)
+                        _respond(client, channel=channel, text=summary or "Here you go:", blocks=blocks, thread_ts=ts)
+            except SlackApiError as exc:
+                logger.exception("Slack send failed: %s", exc)
+            except Exception as exc:
+                logger.exception("Slack mention handler failed: %s", exc)
+                _respond(client, channel=channel, text="Sorry, I hit an error processing that message.", thread_ts=ts)
 
     # Direct messages
     @app.message(re.compile(".*"))
@@ -410,24 +707,38 @@ def create_slack_app() -> App:
 
         lowered = question.lower()
         if lowered == "help":
-            _respond(client, channel=channel, text=WELCOME_MESSAGE)
+            _respond(client, channel=channel, text=f"{WELCOME_MESSAGE}\n<{HELP_URL}|Open wtchtwr>")
         elif lowered in {"dashboard", "open dashboard", "show dashboard"}:
             _respond(client, channel=channel, text=_dashboard_message())
         elif lowered == "clear":
-            msg = _clear_conversation(client, channel, bot_user_id)
-            _respond(client, channel=channel, text=msg)
+            _clear_conversation(client, channel, bot_user_id)
+            return
         elif lowered == "export":
-            _respond(client, channel=channel, text="Use the HOPE web dashboard or SQL modal to export.")
+            _respond(client, channel=channel, text=f"Export via the web dashboard: <{EXPORT_URL}|Open export options>")
         else:
-            thread_ref = message.get("thread_ts") or message.get("ts") or channel
-            outcome = handle_question(question, thread_id=thread_ref)
-            if "error" in outcome:
-                _respond(client, channel=channel, text=outcome["error"])
-            else:
-                payload, summary = outcome["payload"], outcome["summary"]
-                cache_key = _store_payload(channel, payload, message.get("ts"))
-                blocks = _build_blocks(summary, payload, cache_key)
-                _respond(client, channel=channel, text=summary, blocks=blocks)
+            thread_ref = channel  # keep one conversation per DM channel
+            logger.info("[Slack] Handling DM %s (%s): %s", channel, thread_ref, question)
+            try:
+                outcome = handle_question(question, thread_id=thread_ref) or {}
+                if outcome.get("error"):
+                    _respond(client, channel=channel, text=outcome.get("error"))
+                else:
+                    payload = outcome.get("payload")
+                    summary = outcome.get("summary") or outcome.get("answer_text") or ""
+                    if payload:
+                        summary = _format_slack_answer(summary, payload)
+                    if payload is None:
+                        _respond(client, channel=channel, text="No result returned for that question.")
+                    else:
+                        cache_key = _store_payload(channel, payload, message.get("ts"))
+                        blocks = _build_blocks(summary or "Here you go:", payload, cache_key)
+                        _respond(client, channel=channel, text=summary or "Here you go:", blocks=blocks)
+            except SlackApiError as exc:
+                logger.exception("Slack send failed: %s", exc)
+                _respond(client, channel=channel, text="Slack send failed; check scopes and tokens.")
+            except Exception as exc:
+                logger.exception("Slack DM handler failed: %s", exc)
+                _respond(client, channel=channel, text=f"Error: {exc}")
 
     # Modal open
     @app.action("view_sql_results")

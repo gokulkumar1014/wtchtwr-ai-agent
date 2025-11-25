@@ -42,9 +42,9 @@ export default function App(): JSX.Element {
     } catch (error) {
       console.warn("Unable to start Slackbot", error);
     }
-    window.open("https://app.slack.com/client/T09M3FZUMQ8/D09LN6EAEQ1", "_blank", "noopener");
+    window.open("https://app.slack.com/client/T09M3FZUMQ8/D09TXFD3S0K", "_blank", "noopener");
     window.setTimeout(() => {
-      window.open("slack://channel?team=T09M3FZUMQ8&id=D09LN6EAEQ1", "_blank");
+      window.open("slack://channel?team=T09M3FZUMQ8&id=D09TXFD3S0K", "_blank");
     }, 150);
   };
 
@@ -107,13 +107,32 @@ export default function App(): JSX.Element {
   }, [conversations]);
 
   const handleDeleteMessage = async (conversationId: string, messageId: string) => {
-    const updated = await apiDeleteMessage(conversationId, messageId);
-    const others = conversations.filter((c) => c.id !== updated.id);
-    const merged = [updated, ...others];
-    setConversations(merged);
-    if (activeConversation?.id === conversationId) {
-      setActiveConversation(updated);
-      setFocusMessageId(undefined);
+    // Optimistic removal for snappier UI
+    const optimistic = conversations.map((c) => {
+      if (c.id !== conversationId) return c;
+      return {
+        ...c,
+        messages: c.messages.filter((m) => m.id !== messageId),
+      };
+    });
+    setConversations(optimistic);
+    setFocusMessageId(undefined);
+    try {
+      const updated = await apiDeleteMessage(conversationId, messageId);
+      const others = conversations.filter((c) => c.id !== updated.id);
+      const merged = [updated, ...others];
+      setConversations(merged);
+      if (activeConversation?.id === conversationId) {
+        setActiveConversation(updated);
+      }
+    } catch (error) {
+      // On failure, refetch the conversation to stay consistent
+      const convo = await getConversation(conversationId);
+      const others = conversations.filter((c) => c.id !== convo.id);
+      setConversations([convo, ...others]);
+      if (activeConversation?.id === conversationId) {
+        setActiveConversation(convo);
+      }
     }
   };
 
@@ -151,7 +170,7 @@ export default function App(): JSX.Element {
               </button>
             </div>
             <div className="space-y-1 text-center">
-              <div className="text-base font-semibold tracking-[0.22em] text-primary-500 uppercase">wtchtwr</div>
+              <div className="text-base font-semibold tracking-[0.22em] text-primary-500">wtchtwr</div>
               <p className="text-xs text-slate-500">Highbury’s demo portfolio co-pilot for NYC</p>
             </div>
 
@@ -229,7 +248,7 @@ export default function App(): JSX.Element {
         >
           <div className="flex flex-wrap items-center justify-between gap-3 pb-4 border-b border-slate-200 mb-6">
             <div>
-              <div className="text-3xl font-bold text-slate-800 tracking-[0.22em] uppercase">wtchtwr</div>
+              <div className="text-3xl font-bold text-slate-800 tracking-[0.22em]">wtchtwr</div>
             </div>
             <button
               onClick={() => setShowAbout(true)}

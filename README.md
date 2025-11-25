@@ -190,6 +190,55 @@ You must fill:
 
 ---
 
+## 🔐 Credentials & Integrations
+
+### Gmail SMTP (wtchtwr Email Identity)
+1. Create or sign in to the `wtchtwr` Gmail account (e.g., `wtchtwr.operations@gmail.com`).
+2. Enable 2-step verification for the account.
+3. Generate an **App Password** for “Mail” → “Other (Custom name)” and copy it.
+4. Export these environment variables before starting the backend:
+   ```
+   MAIL_HOST=smtp.gmail.com
+   MAIL_PORT=465
+   MAIL_USE_SSL=true
+   MAIL_USE_TLS=false
+   MAIL_USERNAME=wtchtwr.operations@gmail.com
+   MAIL_PASSWORD=<gmail app password>
+   MAIL_FROM=wtchtwr.operations@gmail.com
+   ```
+wtchtwr automatically attaches CSV exports when the file is ≤25 MB, zips and attaches larger files, and uploads to Google Drive (when `GDRIVE_*` vars are set) if even the ZIP passes 25 MB.
+
+### Slackbot (wtchtwr Workspace)
+1. Visit [api.slack.com/apps](https://api.slack.com/apps) → **Create New App** → “From scratch”.
+2. Add the bot to your `wtchtwr` workspace and grant scopes: `chat:write`, `chat:write.public`, `app_mentions:read`, `channels:history`, `im:history`, `users:read`, and `commands`.
+3. Under **Event Subscriptions**, enable events (`app_mention`, `message.im`) pointing to your backend URL (e.g., `https://your-host/api/slack/events` when reverse-proxied).
+4. Install the app to obtain:
+   - `SLACK_BOT_TOKEN`
+   - `SLACK_SIGNING_SECRET`
+5. Export those variables before starting `uvicorn`. The Slackbot uses the exact same LangGraph pipeline as the web UI.
+6. The backend now auto-starts the Slackbot thread on boot, so running:
+   ```
+   docker start hope-qdrant
+   uvicorn backend.main:app --reload --port 8000
+   cd frontend && npm run dev -- --host 0.0.0.0 --port 5174
+   ```
+   spins up the API, Slackbot, and web UI in one go.
+
+### Google Drive (Large Export Links)
+To share exports that stay >25 MB even after zipping:
+1. Create a Google Cloud service account with Drive API access.
+2. Download the JSON credentials or note the file path.
+3. Create/choose a Drive folder and capture its ID.
+4. Set:
+   ```
+   GDRIVE_SERVICE_ACCOUNT_FILE=/path/to/service-account.json
+   # or GDRIVE_SERVICE_ACCOUNT_JSON='{"type":"service_account", ...}'
+   GDRIVE_UPLOAD_FOLDER_ID=<folder id>
+   GDRIVE_SHARE_WITH_ANYONE=true   # optional
+   ```
+
+---
+
 # 🧪 Testing
 ```
 pytest -q

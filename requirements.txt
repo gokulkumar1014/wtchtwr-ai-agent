@@ -37,3 +37,4 @@ rich>=13.0.0
 # Slack integration
 slack-bolt>=1.18.0
 slack-sdk>=3.20.0
+tabulate>=0.9.0

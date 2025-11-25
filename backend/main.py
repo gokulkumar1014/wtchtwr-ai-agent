@@ -1,4 +1,4 @@
-"""FastAPI backend wiring for the HOPE application.
+"""FastAPI backend wiring for the wtchtwr application.
 
 This service exposes conversation management endpoints for the React client,
 bridges chat requests into the LangGraph pipeline, and surfaces lightweight
@@ -36,9 +36,11 @@ from backend.emailer import send_email, is_configured as email_is_configured
 from .gdrive import drive_uploader
 from . import exporter
 from agent.config import load_config
-from agent.graph import get_memory_context, run as run_agent, stream as stream_agent
+from agent.graph import build_graph, get_memory_context, run as run_agent, stream as stream_agent
+from slack_bolt.adapter.socket_mode import SocketModeHandler
 from agent.slack.bot import create_slack_app
 from agent.utils.db_utils import get_db_path
+from agent.vector_qdrant import ensure_ready as ensure_vector_ready
 
 try:
     from openai import OpenAI
@@ -50,7 +52,7 @@ except Exception:  # pragma: no cover - optional dependency
 # FastAPI init + CORS
 # ---------------------------------------------------------------------------
 
-app = FastAPI(title="HOPE Backend", version="1.0")
+app = FastAPI(title="wtchtwr Backend", version="1.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -61,7 +63,7 @@ app.add_middleware(
 )
 app.include_router(dashboard_router, prefix="/api/dashboard", tags=["dashboard"])
 
-logger = logging.getLogger("hope.backend")
+logger = logging.getLogger("wtchtwr.backend")
 if not logger.handlers:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s - %(message)s")
 
@@ -116,6 +118,8 @@ class QueryRequest(BaseModel):
 class ConversationCreateRequest(BaseModel):
     title: Optional[str] = Field(default=None, max_length=200)
 
+class ConversationUpdateRequest(BaseModel):
+    title: Optional[str] = Field(default=None, max_length=200)
 
 class MessageCreateRequest(BaseModel):
     role: str = Field(..., pattern=r"^(user|assistant)$")
@@ -1125,15 +1129,80 @@ def _start_slack_bot_thread() -> None:
         logger.warning("[SlackBot] Failed to start: %s", exc)
         return
 
+    handler = None
+    app_token = getattr(slack_app, "_app_token", None)
+    if app_token:
+        handler = SocketModeHandler(slack_app, app_token)
+        target = handler.start
+        kwargs = {}
+        logger.info("[SlackBot] Starting in Socket Mode.")
+    else:
+        target = slack_app.start
+        kwargs = {"port": SLACK_PORT}
+        logger.info("[SlackBot] Starting HTTP receiver on port %s.", SLACK_PORT)
+
     SLACK_THREAD = threading.Thread(
-        target=slack_app.start,
-        kwargs={"port": SLACK_PORT},
+        target=target,
+        kwargs=kwargs,
         daemon=True,
         name="SlackBotThread",
     )
     SLACK_THREAD.start()
     SLACK_RUNNING = True
-    logger.info("[SlackBot] Initialized successfully on port %s.", SLACK_PORT)
+    
+
+def _warmup_duckdb() -> None:
+    """Touch key DuckDB tables to prime caches and connections."""
+    try:
+        with open_connection(read_only=False) as con:
+            for table in ("listings_cleaned", "reviews_enriched", "amenities_norm"):
+                try:
+                    con.execute(f"SELECT COUNT(*) FROM {table} LIMIT 1")
+                except duckdb.Error:
+                    logger.debug("[Warmup] Table %s not available during warmup.", table)
+    except Exception as exc:
+        logger.warning("[Warmup] DuckDB warmup failed: %s", exc)
+
+
+def _warmup_agent_queries() -> None:
+    """Run lightweight agent prompts to exercise SQL/RAG/triage paths."""
+    sample_prompts = [
+        "List average occupancy for my Highbury listings in Manhattan",
+        "Show recent guest reviews mentioning parking in Midtown",
+        "Be a portfolio triage agent and diagnose Highbury listings in Manhattan",
+    ]
+    for idx, prompt in enumerate(sample_prompts, start=1):
+        try:
+            run_agent(
+                prompt,
+                tenant="warmup",
+                composer_enabled=False,
+                thread_id=f"warmup-{idx}-{int(time.time() * 1000)}",
+            )
+        except Exception as exc:
+            logger.debug("[Warmup] Ignoring warmup prompt failure (%s): %s", prompt, exc)
+
+
+def _run_warmup_tasks() -> None:
+    """Execute all warmup tasks (graph build, vector, DB, sample queries)."""
+    logger.info("[Warmup] Priming agent caches…")
+    try:
+        build_graph()
+    except Exception as exc:
+        logger.warning("[Warmup] Graph compilation failed: %s", exc)
+    try:
+        ensure_vector_ready()
+    except Exception as exc:
+        logger.warning("[Warmup] Vector warmup failed: %s", exc)
+    _warmup_duckdb()
+    _warmup_agent_queries()
+    logger.info("[Warmup] Completed agent warmup sequence.")
+
+
+@app.on_event("startup")
+async def _start_background_services() -> None:
+    """Ensure auxiliary services (Slackbot) are ready when the API boots."""
+    _start_slack_bot_thread()
 
 
 # ---------------------------------------------------------------------------
@@ -1306,6 +1375,29 @@ async def api_create_conversation(req: ConversationCreateRequest = Body(default_
         print("❌ Message Error:", traceback.format_exc())
         return JSONResponse(content={"error": str(exc)}, status_code=500)
 
+@app.patch("/api/conversations/{conversation_id}")
+async def api_update_conversation(conversation_id: str, req: ConversationUpdateRequest):
+    try:
+        with open_connection() as conn:
+            conversation = fetch_conversation(conn, conversation_id)
+            new_title = (req.title or "").strip()
+            if not new_title:
+                new_title = generate_conversation_title(conversation.get("messages", []))
+            conn.execute(
+                "UPDATE conversations SET title = ?, updated_at = ? WHERE id = ?",
+                [new_title, utcnow(), conversation_id],
+            )
+            updated = fetch_conversation(conn, conversation_id)
+        safe_response = safe_json(normalise_payload(updated))
+        return JSONResponse(content=safe_response)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        import traceback
+
+        print("❌ Message Error:", traceback.format_exc())
+        return JSONResponse(content={"error": str(exc)}, status_code=500)
+    
 
 @app.get("/api/conversations/{conversation_id}")
 async def api_get_conversation(conversation_id: str):
@@ -1452,7 +1544,7 @@ def _finalize_assistant_message(
 ) -> Dict[str, Any]:
     import logging
 
-    debug_logger = logging.getLogger("hope.debug")
+    debug_logger = logging.getLogger("wtchtwr.debug")
     debug_logger.warning("[DEBUG_DUMP] result keys: %s", list(result.keys()))
     try:
         debug_logger.warning(
@@ -1910,7 +2002,7 @@ def _load_trace_from_memory(thread_candidates: Sequence[str]) -> List[Dict[str, 
 def _trace_to_transcript(trace: Sequence[Dict[str, str]]) -> str:
     lines: List[str] = []
     for turn in trace:
-        role = "User" if turn.get("role") == "user" else "HOPE"
+        role = "User" if turn.get("role") == "user" else "wtchtwr"
         content = (turn.get("content") or "").strip()
         if not content:
             continue
@@ -1928,7 +2020,7 @@ def _summarize_trace_with_llm(trace: Sequence[Dict[str, str]]) -> Optional[List[
     if not transcript:
         return None
     system_prompt = (
-        "You are an analytics note-taker summarising a conversation between a business stakeholder and the HOPE agent. "
+        "You are an analytics note-taker summarising a conversation between a business stakeholder and the wtchtwr agent. "
         "Return JSON with this exact shape: "
         '{"focus": "<one sentence>", "insights": ["<point>", "..."], "next_steps": ["<action>"]}. '
         "Limit to 110 words overall and avoid referencing SQL, pipelines, or tool names."
@@ -2318,8 +2410,35 @@ async def api_delete_conversation(conversation_id: str):
 async def api_delete_message(conversation_id: str, message_id: str):
     try:
         with open_connection() as conn:
-            conn.execute("DELETE FROM messages WHERE id = ? AND conversation_id = ?", [message_id, conversation_id])
-            # Update updated_at to last message timestamp when available
+            # Delete the target message and, if it's a user message, also the immediately following assistant reply.
+            message_row = conn.execute(
+                """
+                SELECT id, role, timestamp
+                FROM messages
+                WHERE id = ? AND conversation_id = ?
+                LIMIT 1
+                """,
+                [message_id, conversation_id],
+            ).fetchone()
+
+            if message_row:
+                conn.execute("DELETE FROM messages WHERE id = ? AND conversation_id = ?", [message_id, conversation_id])
+                msg_role = message_row[1]
+                msg_ts = message_row[2]
+                if msg_role == "user":
+                    assist_row = conn.execute(
+                        """
+                        SELECT id
+                        FROM messages
+                        WHERE conversation_id = ? AND role = 'assistant' AND timestamp > ?
+                        ORDER BY timestamp ASC
+                        LIMIT 1
+                        """,
+                        [conversation_id, msg_ts],
+                    ).fetchone()
+                    if assist_row:
+                        conn.execute("DELETE FROM messages WHERE id = ? AND conversation_id = ?", [assist_row[0], conversation_id])
+
             last_timestamp = conn.execute(
                 "SELECT MAX(timestamp) FROM messages WHERE conversation_id = ?",
                 [conversation_id],
@@ -2787,6 +2906,8 @@ async def startup_event() -> None:
         ensure_schema(conn)
         purge_expired_exports()
     _start_slack_bot_thread()
+    threading.Thread(target=_run_warmup_tasks, name="WarmupThread", daemon=True).start()
+
 
 
 @app.on_event("shutdown")

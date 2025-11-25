@@ -1,5 +1,5 @@
 """
-Configuration utilities for the H.O.P.E. AI Agent.
+Configuration utilities for the wtchtwr AI Agent.
 Ensures all environment variables and file paths are consistently initialized
 for LangGraph orchestration (compose → graph → nl2sql_llm → vector_qdrant).
 """

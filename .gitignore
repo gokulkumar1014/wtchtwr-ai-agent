@@ -53,9 +53,6 @@ data/clean/
 db/*
 !db/README.md
 
-# Allow team to track database if needed (small enough)
-!db/airbnb.duckdb
-
 ###############################################################################
 # 🧠 VECTORS / EMBEDDINGS
 ###############################################################################
@@ -63,11 +60,6 @@ db/*
 # Ignore entire vec folder by default
 vec/*
 !vec/README.md
-
-# Allow ONLY these required vector assets:
-!vec/airbnb_reviews/
-!vec/airbnb_reviews/*.npy
-!vec/airbnb_reviews/*.parquet
 
 ###############################################################################
 # 🧱 QDRANT STORAGE (NEVER COMMIT)
@@ -95,9 +87,5 @@ storage/
 *.pt
 *.ckpt
 
-# Re-allow tracked assets already whitelisted
-!data/cache/*.parquet
-!data/samples/*.csv
-!vec/airbnb_reviews/*.npy
-!vec/airbnb_reviews/*.parquet
 config/gdrive_service_account.json
+db/airbnb.duckdb

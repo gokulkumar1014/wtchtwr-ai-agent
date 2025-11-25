@@ -41,7 +41,7 @@ def get_settings() -> EmailSettings:
     password = os.getenv("MAIL_PASSWORD") or None
     use_tls = _bool_env("MAIL_USE_TLS", False)
     use_ssl = _bool_env("MAIL_USE_SSL", False)
-    sender = os.getenv("MAIL_FROM", "hope-agent@example.com")
+    sender = os.getenv("MAIL_FROM", "wtchtwr-agent@example.com")
 
     if use_tls and use_ssl:
         raise RuntimeError("MAIL_USE_TLS and MAIL_USE_SSL cannot both be enabled.")

@@ -8,6 +8,6 @@ from backend.emailer import send_email
 
 send_email(
     recipient="gokulkumar0639@gmail.com",
-    subject="HOPE AI Email Test",
-    body="This is a test email sent from HOPE AI backend!",
+    subject="wtchtwr AI Email Test",
+    body="This is a test email sent from the wtchtwr backend!",
 )

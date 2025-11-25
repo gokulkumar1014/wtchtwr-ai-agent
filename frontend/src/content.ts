@@ -45,23 +45,23 @@ export const SAMPLE_QUERIES: string[] = [
 
 export const ABOUT_POINTS: { title: string; detail: string }[] = [
   {
-    title: "Why wtchtwr",
+    title: "What wtchtwr Solves",
     detail:
-      "wtchtwr is our end-to-end assistant built on top of Highbury’s NYC dataset. It demonstrates how operators can interrogate portfolio KPIs, market comps, and guest feedback without wrangling spreadsheets.",
+      "wtchtwr is a portfolio intelligence co-pilot for STR operators. It combines NL→SQL analytics, RAG-powered review retrieval, sentiment scoring, portfolio triage, competitor benchmarking, and amenity diagnostics so you can interrogate every KPI from one prompt bar.",
   },
   {
-    title: "End-to-End Intelligence",
+    title: "End-to-End Operator Workflow",
     detail:
-      "NL→SQL answers portfolio performance questions instantly, while teammates are wiring up RAG (Qdrant + all-MiniLM-L6-v2) over reviews and VADER-based sentiment for narrative depth.",
+      "From the chat canvas you can run SQL-grade pricing & occupancy checks, pull review citations, summarize chats, open recent messages, email stakeholders, export CSVs, and trigger Slackbot, dashboard, or data export flows without leaving wtchtwr.",
   },
   {
-    title: "Dashboards, Slackbot, & Data Export",
+    title: "Signals + Narrative",
     detail:
-      "Jump into the dashboard for visual KPI tracking, hand off follow-ups via the Slackbot, tap Help & Ideas for curated prompts, or grab structured data from the export workspace with ready-to-share email workflows.",
+      "Every answer blends structured DuckDB metrics with Qdrant review snippets so you get verifiable citations for SQL queries and qualitative insights (parking, comfort, amenities, sentiment themes). Portfolio Triage and competitor benchmarking surface risks and pricing gaps automatically.",
   },
   {
-    title: "Fictional Client, Real Workflow",
+    title: "Channels & Surfaces",
     detail:
-      "Highbury is a fictional hospitality client we selected for the demo. The flows and interfaces here mirror exactly what we plan to run in production for real portfolios.",
+      "The React + Vite dashboard, Slackbot, chat history, recent-message spotlight, and export workspace are all wired into the same LangGraph pipeline. Start in chat, continue in Slack, or pull CSV/email packages as soon as a question lands.",
   },
 ];

@@ -1,4 +1,4 @@
-"""Pytest configuration for HOPE Agent tests."""
+"""Pytest configuration for wtchtwr Agent tests."""
 from __future__ import annotations
 
 import sys

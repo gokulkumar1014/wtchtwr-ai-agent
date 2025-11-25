@@ -1,5 +1,5 @@
 """
-Persistent storage utilities for conversations and thread mappings in H.O.P.E backend.
+Persistent storage utilities for conversations and thread mappings in wtchtwr backend.
 """
 
 from __future__ import annotations

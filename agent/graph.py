@@ -1,4 +1,4 @@
-"""Stateful LangGraph orchestration for the HOPE Agent."""
+"""Stateful LangGraph orchestration for the wtchtwr Agent."""
 from __future__ import annotations
 
 # Ensure LangGraph is up-to-date if compatible

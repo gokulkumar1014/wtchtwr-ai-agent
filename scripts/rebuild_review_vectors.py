@@ -208,10 +208,26 @@ def _prepare_qdrant_client(cfg) -> QdrantClient:
     )
 
 
+def _collection_exists(client: QdrantClient, collection_name: str) -> bool:
+    """
+    Older qdrant-client releases lacked collection_exists() so we fallback to get_collection().
+    """
+    if hasattr(client, "collection_exists"):
+        return client.collection_exists(collection_name=collection_name)
+    try:
+        client.get_collection(collection_name=collection_name)
+        return True
+    except UnexpectedResponse as exc:
+        message = str(exc).lower()
+        if "not found" in message or "doesn't exist" in message or getattr(exc, "status_code", None) == 404:
+            return False
+        LOGGER.warning("get_collection failed; assuming collection exists: %s", exc)
+        return True
+    
 def _recreate_collection(client: QdrantClient, collection_name: str) -> None:
     LOGGER.info("Recreating Qdrant collection %s", collection_name)
     try:
-        exists = client.collection_exists(collection_name=collection_name)
+        exists = _collection_exists(client, collection_name)
     except UnexpectedResponse as exc:
         LOGGER.warning("collection_exists failed: %s", exc)
         exists = True

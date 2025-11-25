@@ -14,7 +14,7 @@ from .utils.cleaners import format_sql_result_as_markdown
 from .summary_utils import extract_focus_word
 
 _LOGGER = logging.getLogger(__name__)
-NL2SQL_LOGGER = logging.getLogger('hope.agent')
+NL2SQL_LOGGER = logging.getLogger('wtchtwr.agent')
 
 PRIMARY_LLM = "gpt-4o-mini"
 FALLBACK_LLM = "gpt-4o"

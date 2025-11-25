@@ -1,4 +1,4 @@
-"""State models shared across the HOPE Agent."""
+"""State models shared across the wtchtwr Agent."""
 from __future__ import annotations
 
 import logging
