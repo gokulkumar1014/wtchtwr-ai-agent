@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useChatStore } from "@/store/useChat";
 import { MessageBubble } from "@/components/Message";
@@ -8,6 +8,7 @@ import {
   exportMessage,
   sendSummaryEmail,
   summarizeConversation,
+  updateConversationTitle,
   type ConversationSummaryPayload,
 } from "@/lib/api";
 import { WELCOME_MESSAGE } from "@/content";
@@ -16,9 +17,9 @@ import type { AssistantPayload, Conversation, Message } from "@/store/useChat";
 import { hydrateMessage } from "@/lib/messages";
 const DEBUG = import.meta.env.VITE_DEBUG === "true";
 
-const SLACKBOT_URL = "https://app.slack.com/client/T09M3FZUMQ8/D09LN6EAEQ1";
-const SLACKBOT_APP_LINK = "slack://channel?team=T09M3FZUMQ8&id=D09LN6EAEQ1";
-const THREAD_STORAGE_KEY = "hope.chat.thread_id";
+const SLACKBOT_URL = "https://app.slack.com/client/T09M3FZUMQ8/D09TXFD3S0K";
+const SLACKBOT_APP_LINK = "slack://channel?team=T09M3FZUMQ8&id=D09TXFD3S0K";
+const THREAD_STORAGE_KEY = "wtchtwr.chat.thread_id";
 const THINKING_TRACE_ENABLED = (import.meta.env.VITE_THINKING_TRACE || "on") !== "off";
 
 type StructuredSummaryItem = {
@@ -162,7 +163,7 @@ export const ChatPage: React.FC = () => {
   const isMountedRef = useRef(true);
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [highlightedId, setHighlightedId] = useState<string | undefined>();
+  const [highlightedIds, setHighlightedIds] = useState<string[]>([]);
 
   const [summaryData, setSummaryData] = useState<ConversationSummaryPayload | null>(null);
   const [summaryView, setSummaryView] = useState<"concise" | "detailed">("concise");
@@ -178,13 +179,19 @@ export const ChatPage: React.FC = () => {
   const [emailSending, setEmailSending] = useState(false);
   const [emailFeedback, setEmailFeedback] = useState<string | null>(null);
   const [emailError, setEmailError] = useState<string | null>(null);
+  const [titleEditing, setTitleEditing] = useState(false);
+  const [titleDraft, setTitleDraft] = useState("");
+  const [titleSaving, setTitleSaving] = useState(false);
+  const [titleError, setTitleError] = useState<string | null>(null);
   const actionHandledRef = useRef<Set<string>>(new Set());
   const EMAIL_SHARE_OPTIONS: { value: ShareOptionValue; label: string; description: string }[] = [
     { value: "sql", label: "SQL only", description: "Embed the generated SQL in the email body." },
     { value: "csv", label: "CSV only", description: "Attach the selected table as a CSV file." },
     { value: "both", label: "SQL + CSV", description: "Send the SQL inline and attach the CSV export." },
   ];
-  const highlightTimerRef = useRef<number | null>(null);
+  const highlightCleanupRef = useRef<(() => void) | null>(null);
+  const highlightFadeTimeoutRef = useRef<number | null>(null);
+  const autoScrollLockRef = useRef(false);
   const scrollRetryRef = useRef<number | null>(null);
   const pendingMessageRef = useRef<{
     conversationId: string;
@@ -215,6 +222,24 @@ export const ChatPage: React.FC = () => {
       window.localStorage.setItem(THREAD_STORAGE_KEY, threadId);
     }
   }, [threadId]);
+
+  const clearHighlight = useCallback(
+    (unlock: boolean) => {
+      if (highlightFadeTimeoutRef.current) {
+        window.clearTimeout(highlightFadeTimeoutRef.current);
+        highlightFadeTimeoutRef.current = null;
+      }
+      setHighlightedIds([]);
+      if (highlightCleanupRef.current) {
+        highlightCleanupRef.current();
+        highlightCleanupRef.current = null;
+      }
+      if (unlock) {
+        autoScrollLockRef.current = false;
+      }
+    },
+    []
+  );
 
   const currentConversation = useMemo(() => {
     if (!activeConversation) return undefined;
@@ -337,6 +362,18 @@ export const ChatPage: React.FC = () => {
     actionHandledRef.current = handled;
   }, [currentConversation?.id]);
 
+  useEffect(() => {
+    if (!currentConversation) {
+      setTitleEditing(false);
+      setTitleDraft("");
+      setTitleError(null);
+      return;
+    }
+    if (!titleEditing) {
+      setTitleDraft(currentConversation.title || "");
+    }
+  }, [currentConversation?.id, currentConversation?.title, titleEditing]);
+
   const userMessageCount = useMemo(
     () =>
       currentConversation?.messages.reduce(
@@ -349,7 +386,7 @@ export const ChatPage: React.FC = () => {
   useEffect(() => {
     if (focusMessageId) return;
     const container = messagesContainerRef.current;
-    if (!container) return;
+    if (!container || autoScrollLockRef.current) return;
     container.scrollTo({ top: container.scrollHeight, behavior: "smooth" });
   }, [currentConversation?.messages, focusMessageId]);
 
@@ -815,45 +852,132 @@ export const ChatPage: React.FC = () => {
     }
   };
 
+  const beginTitleEdit = () => {
+    if (!currentConversation) return;
+    setTitleDraft(currentConversation.title || "");
+    setTitleEditing(true);
+    setTitleError(null);
+  };
+
+  const cancelTitleEdit = () => {
+    setTitleEditing(false);
+    setTitleError(null);
+    setTitleDraft(currentConversation?.title || "");
+  };
+
+  const saveConversationTitle = async () => {
+    if (!currentConversation) return;
+    setTitleSaving(true);
+    setTitleError(null);
+    try {
+      const updated = await updateConversationTitle(currentConversation.id, titleDraft.trim());
+      syncConversation(updated);
+      setTitleEditing(false);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to rename conversation.";
+      setTitleError(message);
+    } finally {
+      setTitleSaving(false);
+    }
+  };
+
   useEffect(() => {
-    if (!focusMessageId) {
+    if (!focusMessageId || !currentConversation) {
       return;
     }
+    clearHighlight(false);
+    autoScrollLockRef.current = true;
     let attempts = 0;
+    const maxAttempts = 25;
+    const messages = currentConversation.messages || [];
+
     const scrollIntoView = () => {
+      const container = messagesContainerRef.current;
       const el = document.getElementById(`msg-${focusMessageId}`);
-      if (el) {
-        el.scrollIntoView({ behavior: "smooth", block: "center" });
-        setHighlightedId(focusMessageId);
-        if (highlightTimerRef.current) {
-          window.clearTimeout(highlightTimerRef.current);
+      if (container && el) {
+        const containerRect = container.getBoundingClientRect();
+        const elRect = el.getBoundingClientRect();
+        const offset = elRect.top - containerRect.top;
+        const targetTop = container.scrollTop + offset - container.clientHeight * 0.25;
+        container.scrollTo({ top: Math.max(0, targetTop), behavior: "smooth" });
+
+        const idx = messages.findIndex((message) => message.id === focusMessageId);
+        const ids = new Set<string>();
+        if (idx !== -1) {
+          const targetMessage = messages[idx];
+          ids.add(targetMessage.id);
+          if (targetMessage.role === "user") {
+            const answer = messages[idx + 1];
+            if (answer && answer.role === "assistant") {
+              ids.add(answer.id);
+            }
+          } else if (targetMessage.role === "assistant") {
+            const question = messages[idx - 1];
+            if (question && question.role === "user") {
+              ids.add(question.id);
+            }
+          }
+        } else {
+          ids.add(focusMessageId);
         }
-        highlightTimerRef.current = window.setTimeout(() => {
-          setHighlightedId(undefined);
-          highlightTimerRef.current = null;
-        }, 2000);
+        setHighlightedIds(Array.from(ids));
+
+        if (highlightFadeTimeoutRef.current) {
+          window.clearTimeout(highlightFadeTimeoutRef.current);
+        }
+        highlightFadeTimeoutRef.current = window.setTimeout(() => {
+          setHighlightedIds([]);
+          highlightFadeTimeoutRef.current = null;
+        }, 2200);
+
+        if (highlightCleanupRef.current) {
+          highlightCleanupRef.current();
+          highlightCleanupRef.current = null;
+        }
+
+        const handleInteraction = () => clearHighlight(true);
+        container.addEventListener("scroll", handleInteraction, { once: true });
+        window.addEventListener("pointerdown", handleInteraction, { once: true });
+        window.addEventListener("keydown", handleInteraction, { once: true });
+        highlightCleanupRef.current = () => {
+          container.removeEventListener("scroll", handleInteraction);
+          window.removeEventListener("pointerdown", handleInteraction);
+          window.removeEventListener("keydown", handleInteraction);
+        };
+
         setFocusMessageId(undefined);
         return;
       }
-      if (attempts < 6) {
+      if (attempts < maxAttempts) {
         attempts += 1;
-        scrollRetryRef.current = window.setTimeout(scrollIntoView, 140);
+        scrollRetryRef.current = window.setTimeout(scrollIntoView, 200);
       } else {
+        console.warn("Could not find message element for focus", focusMessageId);
+        clearHighlight(true);
         setFocusMessageId(undefined);
       }
     };
+
     scrollIntoView();
     return () => {
       if (scrollRetryRef.current) {
         window.clearTimeout(scrollRetryRef.current);
         scrollRetryRef.current = null;
       }
-      if (highlightTimerRef.current) {
-        window.clearTimeout(highlightTimerRef.current);
-        highlightTimerRef.current = null;
-      }
     };
-  }, [focusMessageId, setFocusMessageId]);
+  }, [
+    focusMessageId,
+    currentConversation?.id,
+    currentConversation?.messages?.length,
+    setFocusMessageId,
+    clearHighlight,
+  ]);
+
+  useEffect(() => {
+    return () => {
+      clearHighlight(true);
+    };
+  }, [clearHighlight]);
 
   useEffect(() => {
     if (!currentConversation) return;
@@ -1051,10 +1175,64 @@ export const ChatPage: React.FC = () => {
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
-      <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
-        <h1 className="text-2xl font-semibold text-slate-800">
-          {currentConversation.title || "New conversation"}
-        </h1>
+      <div className="flex flex-wrap items-start justify-between gap-4 mb-4">
+        <div className="flex flex-col gap-1">
+          {titleEditing ? (
+            <>
+              <div className="flex flex-wrap items-center gap-2">
+                <input
+                  value={titleDraft}
+                  onChange={(event) => setTitleDraft(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      void saveConversationTitle();
+                    }
+                    if (event.key === "Escape") {
+                      event.preventDefault();
+                      cancelTitleEdit();
+                    }
+                  }}
+                  maxLength={200}
+                  className="min-w-[240px] rounded-2xl border border-slate-300 bg-white/80 px-3 py-2 text-base text-slate-800 shadow-sm focus:border-primary-400 focus:outline-none focus:ring-2 focus:ring-primary-100"
+                  placeholder="Add a chat title"
+                  autoFocus
+                />
+                <button
+                  onClick={() => void saveConversationTitle()}
+                  disabled={titleSaving}
+                  className="rounded-full bg-primary-500 px-4 py-1.5 text-sm font-semibold text-white shadow hover:bg-primary-600 disabled:opacity-60"
+                >
+                  {titleSaving ? "Saving…" : "Save"}
+                </button>
+                <button
+                  onClick={cancelTitleEdit}
+                  className="rounded-full border border-slate-300 px-4 py-1.5 text-sm font-semibold text-slate-600 hover:border-slate-400"
+                >
+                  Cancel
+                </button>
+              </div>
+              <p className="text-xs text-slate-500">
+                Leave blank to auto-name the chat from the first user message.
+              </p>
+            </>
+          ) : (
+            <div className="flex items-center gap-2">
+              <h1 className="text-2xl font-semibold text-slate-800">
+                {currentConversation.title || "New conversation"}
+              </h1>
+              <button
+                onClick={beginTitleEdit}
+                className="inline-flex items-center justify-center rounded-full border border-slate-300 p-2 text-slate-500 hover:border-primary-300 hover:text-primary-600"
+                title="Rename chat"
+                aria-label="Rename chat"
+              >
+                ✐
+              </button>
+            </div>
+          )}
+          {titleError && <p className="text-sm text-red-500">{titleError}</p>}
+        </div>
         <div className="flex items-center gap-3">
           {summaryError && <span className="text-sm text-red-500">{summaryError}</span>}
           <button
@@ -1077,7 +1255,7 @@ export const ChatPage: React.FC = () => {
             <MessageBubble
               key={message.id}
               message={message}
-              highlighted={highlightedId === message.id}
+              highlighted={highlightedIds.includes(message.id)}
               exportLoading={exportLoading}
               exportError={exportError}
               onExport={(tableIndex) => handleExport(message.id, tableIndex)}

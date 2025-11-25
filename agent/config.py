@@ -1,5 +1,5 @@
 """
-Configuration utilities for the H.O.P.E. AI Agent.
+Configuration utilities for the wtchtwr AI agent.
 Ensures all environment variables and file paths are consistently initialized
 for LangGraph orchestration (compose → graph → nl2sql_llm → vector_qdrant).
 """
@@ -132,7 +132,7 @@ DEFAULT_WHITELIST: Dict[str, List[str]] = {
 
 @dataclass(frozen=True)
 class Config:
-    """Immutable configuration for the HOPE Agent runtime."""
+    """Immutable configuration for the wtchtwr runtime."""
 
     duckdb_path: Path
     chroma_dir: Path

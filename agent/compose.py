@@ -1,4 +1,4 @@
-"""Conversational composer utilities for the HOPE Agent."""
+"""Conversational composer utilities for the wtchtwr agent."""
 from __future__ import annotations
 
 import logging

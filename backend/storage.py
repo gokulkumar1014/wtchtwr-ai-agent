@@ -1,5 +1,5 @@
 """
-Persistent storage utilities for conversations and thread mappings in H.O.P.E backend.
+Persistent storage utilities for conversations and thread mappings in the wtchtwr backend.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ WELCOME_TEXT = (
     "• \"Compare avg price in Midtown: mine vs market\"\n"
     "• \"Show the latest 5 reviews for listing 2595\"\n\n"
     "Useful shortcuts: Type help for knowing what things you can do using the chatbot · "
-    "dashboard for veiwing the dashboard · slackbot for going to the slack app. How can I help today?"
+    "dashboard for viewing the dashboard · slackbot for going to the Slack app. How can I help today?"
 )
 
 HELP_TEXT = (

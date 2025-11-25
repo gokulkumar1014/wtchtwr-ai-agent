@@ -101,3 +101,5 @@ storage/
 !vec/airbnb_reviews/*.npy
 !vec/airbnb_reviews/*.parquet
 config/gdrive_service_account.json
+db/airbnb.duckdb
+db/airbnb.duckdb

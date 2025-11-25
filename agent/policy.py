@@ -1,4 +1,4 @@
-"""Policy helpers for state normalization and planning (HOPE Agent)."""
+"""Policy helpers for state normalization and planning (wtchtwr agent)."""
 
 from __future__ import annotations
 import logging

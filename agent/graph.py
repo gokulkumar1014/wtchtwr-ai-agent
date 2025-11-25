@@ -1,4 +1,4 @@
-"""Stateful LangGraph orchestration for the HOPE Agent."""
+"""Stateful LangGraph orchestration for the wtchtwr agent."""
 from __future__ import annotations
 
 # Ensure LangGraph is up-to-date if compatible
@@ -1142,7 +1142,7 @@ def run_graph(initial_state: GraphState, thread_id: Optional[str] = None) -> Gra
     compiled = build_graph()
 
     _LOGGER.info(
-        "[LangGraph] 🚀 Starting HOPE Agent Graph | tenant=%s | thread=%s",
+        "[LangGraph] 🚀 Starting wtchtwr Agent Graph | tenant=%s | thread=%s",
         initial_state.tenant,
         thread_key,
     )
@@ -1184,7 +1184,7 @@ def run(
     thread_id: Optional[str] = None,
     stream_scope: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Run the HOPE Agent LangGraph pipeline."""
+    """Run the wtchtwr LangGraph pipeline."""
     cfg = load_config()
     history = history or []
     if len(history) > cfg.chat_max_turns:

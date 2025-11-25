@@ -1,10 +1,10 @@
-"""FastAPI router exposing dashboard analytics endpoints on the main HOPE backend."""
+"""FastAPI router exposing dashboard analytics endpoints on the wtchtwr backend."""
 from __future__ import annotations
 import logging
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
 from .dashboard import DashboardRequest, build_dashboard_response, load_filter_options
-logger = logging.getLogger('hope.dashboard')
+logger = logging.getLogger('wtchtwr.dashboard')
 router = APIRouter()
 
 @router.get('/meta')

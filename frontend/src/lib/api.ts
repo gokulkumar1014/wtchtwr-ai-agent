@@ -103,6 +103,13 @@ export async function deleteConversation(conversationId: string): Promise<Conver
   });
 }
 
+export async function updateConversationTitle(conversationId: string, title: string): Promise<Conversation> {
+  return request<Conversation>(`${API_BASE_URL}/api/conversations/${conversationId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ title }),
+  });
+}
+
 export async function deleteMessage(conversationId: string, messageId: string): Promise<Conversation> {
   return request<Conversation>(`${API_BASE_URL}/api/conversations/${conversationId}/messages/${messageId}`, {
     method: "DELETE",
