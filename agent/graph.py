@@ -37,23 +37,6 @@ except Exception:  # pragma: no cover - fallback when LangGraph is unavailable
         def put(self, thread_id: str, memory: Dict[str, Any]) -> None:
             self._store[thread_id] = dict(memory or {})
 
-try:
-    from langgraph.memory import BufferWindowMemory
-except Exception:  # pragma: no cover - fallback when LangGraph is unavailable
-    class BufferWindowMemory:  # type: ignore[override]
-        def __init__(self, k: int = 6) -> None:
-            self.k = k
-            self._history: Dict[str, List[Dict[str, Any]]] = {}
-
-        def get(self, thread_id: str) -> List[Dict[str, Any]]:
-            history = self._history.get(thread_id, [])
-            return history[-self.k :] if history else []
-
-        def put(self, thread_id: str, messages: List[Dict[str, Any]]) -> None:
-            if not isinstance(messages, list):
-                messages = []
-            self._history[thread_id] = (self._history.get(thread_id, []) + messages)[-self.k :]
-
 from langgraph.graph import END, StateGraph
 
 from .compose import (
@@ -210,15 +193,15 @@ def _merge_states(original: GraphState, updated: GraphState) -> GraphState:
         sql=updated.sql or original.sql or {},
         rag=updated.rag or original.rag or {},
         result_bundle=updated.result_bundle or original.result_bundle,
-        telemetry=updated.telemetry or original.telemetry or {},
-        memory=updated.memory or original.memory or {},
-        history=updated.history or original.history or [],
+        telemetry={**(original.telemetry or {}), **(updated.telemetry or {})},
+        memory={**(original.memory or {}), **(updated.memory or {})},
+        history=updated.history or original.history,
         model_used=updated.model_used or original.model_used,
         timestamp=updated.timestamp or original.timestamp,
         start_time=updated.start_time or original.start_time,
-        raw_input=updated.raw_input or original.raw_input or {},
+        raw_input={**(original.raw_input or {}), **(updated.raw_input or {})},
         guardrail_blocked=updated.guardrail_blocked or original.guardrail_blocked,
-        extras=updated.extras or original.extras or {},
+        extras={**(original.extras or {}), **(updated.extras or {})},
     )
     merged.debug_thinking = updated.debug_thinking or original.debug_thinking
     merged_thinking: List[Any] = []
@@ -592,10 +575,6 @@ def _ingress_node(state: GraphState) -> GraphState:
     graph_state.tenant = raw.get("tenant")
     graph_state.start_time = legacy_state.get("_start_time", time.perf_counter())
     graph_state.debug_thinking = bool(raw.get("debug_thinking"))
-    history = list(state.history or [])
-    history.append({"role": "user", "content": state.query})
-    state.history = history
-    graph_state.history = history
     return _merge_states(state, graph_state)
 
 
@@ -977,10 +956,6 @@ def _compose_node(state: GraphState) -> GraphState:
             meta={"mode": plan_mode or intent_upper},
         )
 
-    history = list(next_state.history or [])
-    history.append({"role": "assistant", "content": answer_text})
-    next_state.history = history
-
     return _merge_states(state, next_state)
 
 
@@ -1093,21 +1068,7 @@ class GraphRunResult:
 def build_graph() -> StateGraph:
     """Build and compile the LangGraph pipeline."""
     builder = StateGraph(GraphState)
-    try:
-        from langgraph.memory import BufferWindowMemory as _RuntimeBufferWindowMemory
-        from langgraph.checkpoint.memory import MemorySaver as _RuntimeMemorySaver
-    except Exception:
-        _RuntimeBufferWindowMemory = BufferWindowMemory
-        _RuntimeMemorySaver = MemorySaver
-
-    if hasattr(builder, "add_memory"):
-        try:
-            builder.add_memory(_RuntimeBufferWindowMemory(k=6), key="history")
-            builder.add_memory(_RuntimeMemorySaver(), key="memory")
-        except Exception as mem_exc:
-            _LOGGER.warning("LangGraph memory unavailable; proceeding without built-in memory: %s", mem_exc)
-    else:
-        _LOGGER.warning("LangGraph add_memory not supported; proceeding without built-in memory modules.")
+    # Memory initialisation disabled; operate the graph in a stateless mode.
 
     builder.add_node("ingress", _ingress_node)
     builder.add_node("guardrails", _guardrails_node)

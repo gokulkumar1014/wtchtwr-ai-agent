@@ -4,29 +4,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import asdict, dataclass, field
-from typing import Annotated, Any, Dict, List, Optional
-
-try:
-    from langgraph.graph import add, overwrite
-except Exception:  # pragma: no cover - fallback for older LangGraph versions
-    def add(existing, incoming):
-        """Simple additive reducer for lists and dicts."""
-        if existing is None:
-            return incoming
-        if incoming is None:
-            return existing
-        if isinstance(existing, dict) and isinstance(incoming, dict):
-            return {**existing, **incoming}
-        if isinstance(existing, list) and isinstance(incoming, list):
-            return existing + incoming
-        try:
-            return existing + incoming  # type: ignore[operator]
-        except Exception:
-            return incoming
-
-    def overwrite(_existing, incoming):
-        """Reducer that always prefers the incoming value."""
-        return incoming
+from typing import Any, Dict, List, Optional
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -57,26 +35,26 @@ class ThinkingStep:
 class GraphState:
     """Conversation state shared across LangGraph nodes."""
 
-    query: Annotated[str, overwrite]
-    tenant: Annotated[Optional[str], overwrite] = None
-    intent: Annotated[Optional[str], overwrite] = None
-    scope: Annotated[Optional[str], overwrite] = None
-    filters: Annotated[Dict[str, Any], overwrite] = field(default_factory=dict)
-    plan: Annotated[Dict[str, Any], overwrite] = field(default_factory=dict)
-    sql: Annotated[Dict[str, Any], overwrite] = field(default_factory=dict)
-    rag: Annotated[Dict[str, Any], overwrite] = field(default_factory=dict)
-    result_bundle: Annotated[Dict[str, Any], overwrite] = field(default_factory=dict)
-    telemetry: Annotated[Dict[str, Any], add] = field(default_factory=dict)
-    memory: Annotated[Dict[str, Any], add] = field(default_factory=dict)
-    history: Annotated[List[Dict[str, Any]], add] = field(default_factory=list)
-    model_used: Annotated[Optional[str], overwrite] = None
-    timestamp: Annotated[Optional[str], overwrite] = None
-    start_time: Annotated[Optional[float], overwrite] = None
-    raw_input: Annotated[Dict[str, Any], overwrite] = field(default_factory=dict)
-    guardrail_blocked: Annotated[bool, overwrite] = False
-    extras: Annotated[Dict[str, Any], add] = field(default_factory=dict)
-    thinking: Annotated[List[ThinkingStep], add] = field(default_factory=list)
-    debug_thinking: Annotated[bool, overwrite] = False
+    query: str
+    tenant: Optional[str] = None
+    intent: Optional[str] = None
+    scope: Optional[str] = None
+    filters: Dict[str, Any] = field(default_factory=dict)
+    plan: Dict[str, Any] = field(default_factory=dict)
+    sql: Dict[str, Any] = field(default_factory=dict)
+    rag: Dict[str, Any] = field(default_factory=dict)
+    result_bundle: Dict[str, Any] = field(default_factory=dict)
+    telemetry: Dict[str, Any] = field(default_factory=dict)
+    memory: Dict[str, Any] = field(default_factory=dict)
+    history: List[Dict[str, Any]] = field(default_factory=list)
+    model_used: Optional[str] = None
+    timestamp: Optional[str] = None
+    start_time: Optional[float] = None
+    raw_input: Dict[str, Any] = field(default_factory=dict)
+    guardrail_blocked: bool = False
+    extras: Dict[str, Any] = field(default_factory=dict)
+    thinking: List[ThinkingStep] = field(default_factory=list)
+    debug_thinking: bool = False
 
 
 State = Dict[str, Any]
