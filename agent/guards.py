@@ -1,4 +1,4 @@
-"""Guard and ingress/egress helpers for the H.O.P.E AI Agent."""
+"""Guard and ingress/egress helpers for the wtchtwr AI Agent."""
 from __future__ import annotations
 
 import html

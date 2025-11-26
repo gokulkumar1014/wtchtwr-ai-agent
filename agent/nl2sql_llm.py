@@ -1,4 +1,4 @@
-"""Schema-aware NL2SQL generation via direct LLM prompting (no FAISS)."""
+"""Schema-aware NL2SQL generation via direct LLM prompting."""
 from __future__ import annotations
 
 import logging
