@@ -882,7 +882,7 @@ def compose_answer(
     }
     if normalized_query in simple_prompts:
         friendly_reply = (
-            "👋 Hi there! I’m wtchtwr - your Airbnb data companion. "
+            "👋 Hi there! I’m wtchtwr - your data companion. "
             "You can ask me about prices, occupancy, revenue  or guest reviews!"
         )
         return friendly_reply, {}
@@ -930,7 +930,7 @@ def compose_answer(
     if normalized_intent in conversational_intents or (policy_value and policy_value.upper() == "CONVERSATION"):
         if normalized_intent == "GREETING":
             return (
-                "👋 Hi there! I’m wtchtwr - your Airbnb data companion. You can ask me about prices, occupancy, revenue, or guest reviews!",
+                "👋 Hi there! I’m wtchtwr - your data companion. You can ask me about prices, occupancy, revenue, or guest reviews!",
                 {},
             )
         if normalized_intent == "THANKS":
@@ -939,7 +939,7 @@ def compose_answer(
                 {},
             )
         return (
-            "I’m wtchtwr- an AI analytics companion built to uncover insights from Airbnb data. Try asking something like 'Average price in Brooklyn' or 'Reviews about cleanliness in Manhattan'.",
+            "I’m wtchtwr- an AI analytics companion built to uncover insights from data. Try asking something like 'Average price in Brooklyn' or 'Reviews about cleanliness in Manhattan'.",
             {},
         )
 
