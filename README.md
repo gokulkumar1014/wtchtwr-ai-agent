@@ -1,4 +1,4 @@
-# 🏠 wtchtwr — AI-Powered Property Performance & Market Insights Agent
+# 🏠 wtchtwr - AI-Powered Property Performance & Market Insights Agent
 
 **wtchtwr** is an AI-driven analytics assistant built for short-term rental (STR) operators, property managers, analysts, and data teams.
 
