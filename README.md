@@ -23,17 +23,19 @@ wtchtwr powers:
 
 ```
 wtchtwr/
-├── agent/                  # LangGraph graph, nodes, policy, vector logic
-├── backend/                # FastAPI backend
-├── frontend/               # React + Vite UI
-├── config/                 # environment configs, keys, service accounts
-├── db/                     # DuckDB file (airbnb.duckdb)
-├── vec/                    # Embeddings + metadata (required)
-├── qdrant_storage/         # Local Qdrant index (NEVER committed)
-├── scripts/                # Reindex, utilities
-├── tests/                  # Unit + integration tests
+├── agent/              # LangGraph pipeline (LLM reasoning, SQL planner, RAG)
+├── backend/            # FastAPI backend (routes, models, storage services)
+├── frontend/           # React + Vite UI (chat interface, dashboard)
+├── config/             # Environment configs, service accounts
+├── db/                 # DuckDB database (airbnb.duckdb)
+├── data/               # Samples, raw data, cleaned data
+├── notebooks/          # EDA + research notebooks
+├── qdrant_storage/     # Local Qdrant vector index (embeddings)
+├── scripts/            # Reindex, utilities
+├── tests/              # Unit + integration tests
+├── vec/                # Embeddings + metadata
 ├── .env.example            # Template environment file
-└── README.md               # This file
+└── README.md           # Project overview
 ```
 
 ---
