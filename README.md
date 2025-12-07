@@ -16,10 +16,10 @@ It combines:
 - **Deterministic Multi-Agent Workflows**
 
 wtchtwr powers:
-- 📊 **Portfolio Triage** — detect low performers, winners, pricing gaps  
-- 🧭 **Expansion Scout** — evaluate high‑growth neighborhoods  
-- 🧮 **Hybrid SQL/RAG Chat** — structured + unstructured insights  
-- 🔍 **Review Intelligence** — sentiment/RAG over 650K+ Airbnb reviews  
+- 📊 **Portfolio Triage** - detect low performers, winners, pricing gaps  
+- 🧭 **Expansion Scout** - evaluate high‑growth neighborhoods  
+- 🧮 **Hybrid SQL/RAG Chat** - structured + unstructured insights  
+- 🔍 **Review Intelligence** - sentiment/RAG over 650K+ Airbnb reviews  
 
 ---
 
@@ -294,4 +294,4 @@ This README serves as the **official onboarding + setup guide** for you and your
 
 ---
 
-© 2025 wtchtwr — Built with ❤️ by Gokul
+© 2025 wtchtwr - Built with ❤️ by Gokul & Team
