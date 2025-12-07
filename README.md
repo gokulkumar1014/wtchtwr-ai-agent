@@ -2,6 +2,8 @@
 
 **wtchtwr** is an AI-driven analytics assistant built for short-term rental (STR) operators, property managers, analysts, and data teams.
 
+https://github.com/user-attachments/assets/0f3a1de5-a3a5-43df-a426-d24ca7672cfb
+
 It combines:
 
 - **Agentic AI (LangGraph)**
